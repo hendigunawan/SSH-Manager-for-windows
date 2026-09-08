@@ -1,0 +1,169 @@
+# ============================================================
+# Proper SSH Manager - .gitignore
+# ============================================================
+
+# ------------------------------------------------------------
+# Windows
+# ------------------------------------------------------------
+Thumbs.db
+Thumbs.db:encryptable
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ------------------------------------------------------------
+# PowerShell temporary / backup files
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# PowerShell transcripts / logs
+*.log
+*.etl
+*.trace
+*.transcript
+
+# ------------------------------------------------------------
+# Visual Studio / VS Code
+# ------------------------------------------------------------
+.vs/
+.vscode/
+
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ------------------------------------------------------------
+# C# build artifacts
+# AskPass.cs -> ssh-askpass.exe
+# ------------------------------------------------------------
+bin/
+obj/
+
+*.pdb
+*.dll
+*.ilk
+
+# Generated askpass executable
+Runtime/ssh-askpass.exe
+
+# ------------------------------------------------------------
+# Release / patch artifacts
+# ------------------------------------------------------------
+patch/*.zip
+release/
+releases/
+dist/
+build/
+out/
+
+# ------------------------------------------------------------
+# Temporary installer files
+# ------------------------------------------------------------
+*.msi
+*.msix
+*.nupkg
+
+# ------------------------------------------------------------
+# Local configuration / credentials
+# ------------------------------------------------------------
+# Jangan commit konfigurasi lokal yang bisa berisi:
+# - hostname
+# - IP
+# - username
+# - password
+# - private key
+# - token
+
+*.local.json
+*.local.cfg
+*.local.conf
+
+config.local.json
+settings.local.json
+credentials.json
+secrets.json
+
+# SSH keys
+*.pem
+*.ppk
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# ------------------------------------------------------------
+# Test runtime/generated files
+# ------------------------------------------------------------
+Tests/output/
+Tests/temp/
+Tests/tmp/
+Tests/logs/
+
+# Jika proper-ssh-manager-config.json hanya konfigurasi lokal,
+# aktifkan baris berikut:
+# Tests/proper-ssh-manager-config.json
+
+# ------------------------------------------------------------
+# PowerShell module cache / generated files
+# ------------------------------------------------------------
+*.clixml
+*.cache
+
+# ------------------------------------------------------------
+# Archives / compressed temporary files
+# ------------------------------------------------------------
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
+
+# ZIP secara umum jangan di-ignore karena mungkin ada ZIP
+# penting di luar folder patch.
+# *.zip
+
+# ------------------------------------------------------------
+# OS/editor garbage
+# ------------------------------------------------------------
+.DS_Store
+ehthumbs.db
+
+# ------------------------------------------------------------
+# Keep important project files
+# ------------------------------------------------------------
+!.gitignore
+!README.md
+!CHANGELOG.md
+!VERSION
+
+!Install.cmd
+!Install.ps1
+!Uninstall.ps1
+!Start-SSHManager.cmd
+!SSHManager.ps1
+
+!Modules/
+!Modules/*.psm1
+
+!Runtime/
+!Runtime/*.ps1
+!Runtime/*.cs
+
+!UI/
+!UI/*.xaml
+
+!Tests/
+!Tests/*.ps1
+!Tests/*.dat
+!Tests/*.cfg

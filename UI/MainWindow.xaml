@@ -1,0 +1,247 @@
+﻿<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Proper SSH Manager" Width="1220" Height="780" MinWidth="980" MinHeight="620"
+        WindowStartupLocation="CenterScreen" Background="#0B1220" Foreground="#E5E7EB">
+    <Window.Resources>
+        <SolidColorBrush x:Key="PanelBrush" Color="#111827"/>
+        <SolidColorBrush x:Key="Panel2Brush" Color="#172033"/>
+        <SolidColorBrush x:Key="BorderBrush" Color="#263348"/>
+        <SolidColorBrush x:Key="AccentBrush" Color="#22C55E"/>
+        <SolidColorBrush x:Key="MutedBrush" Color="#94A3B8"/>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#CBD5E1"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+            <Setter Property="Background" Value="#263348"/>
+            <Setter Property="BorderBrush" Value="#34445D"/>
+            <Setter Property="Padding" Value="12,7"/>
+            <Setter Property="Margin" Value="3"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#16A34A"/>
+            <Setter Property="BorderBrush" Value="#22C55E"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Foreground" Value="#F8FAFC"/>
+            <Setter Property="Background" Value="#0F172A"/>
+            <Setter Property="BorderBrush" Value="#334155"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="CaretBrush" Value="#F8FAFC"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="#F8FAFC"/>
+            <Setter Property="Background" Value="#172033"/>
+            <Setter Property="BorderBrush" Value="#475569"/>
+            <Setter Property="Padding" Value="6,4"/>
+        </Style>
+        <Style TargetType="Menu">
+            <Setter Property="Background" Value="#111827"/>
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+        </Style>
+        <Style TargetType="MenuItem">
+            <Setter Property="Background" Value="#111827"/>
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#0F172A"/>
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+            <Setter Property="BorderBrush" Value="#263348"/>
+            <Setter Property="GridLinesVisibility" Value="Horizontal"/>
+            <Setter Property="HorizontalGridLinesBrush" Value="#1E293B"/>
+            <Setter Property="RowBackground" Value="#0F172A"/>
+            <Setter Property="AlternatingRowBackground" Value="#111B2E"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="SelectionMode" Value="Extended"/>
+            <Setter Property="SelectionUnit" Value="FullRow"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+            <Setter Property="CanUserDeleteRows" Value="False"/>
+            <Setter Property="IsReadOnly" Value="False"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#172033"/>
+            <Setter Property="Foreground" Value="#CBD5E1"/>
+            <Setter Property="BorderBrush" Value="#263348"/>
+            <Setter Property="Padding" Value="8"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Padding" Value="8,0"/>
+        </Style>
+        <Style x:Key="DataGridRowText" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="DataGridRowCheckBox" TargetType="CheckBox">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Foreground" Value="#E5E7EB"/>
+            <Setter Property="BorderBrush" Value="#1E293B"/>
+            <Setter Property="MinHeight" Value="38"/>
+        </Style>
+    </Window.Resources>
+
+    <DockPanel>
+        <Menu DockPanel.Dock="Top" Height="28">
+            <MenuItem Header="_File">
+                <MenuItem x:Name="MenuImport" Header="Import konfigurasi..."/>
+                <MenuItem x:Name="MenuExport" Header="Export konfigurasi..."/>
+                <Separator/>
+                <MenuItem x:Name="MenuExit" Header="Keluar" InputGestureText="Alt+F4"/>
+            </MenuItem>
+            <MenuItem Header="_Host">
+                <MenuItem x:Name="MenuAddHost" Header="Tambah host" InputGestureText="Ctrl+N"/>
+                <MenuItem x:Name="MenuEditHost" Header="Edit host" InputGestureText="Ctrl+E"/>
+                <MenuItem x:Name="MenuDuplicateHost" Header="Duplikat host" InputGestureText="Ctrl+D"/>
+                <MenuItem x:Name="MenuDeleteHost" Header="Hapus host" InputGestureText="Delete"/>
+                <Separator/>
+                <MenuItem x:Name="MenuScp" Header="Transfer SCP..." InputGestureText="Ctrl+Shift+S"/>
+            </MenuItem>
+            <MenuItem Header="_VPN">
+                <MenuItem x:Name="MenuVpnProfiles" Header="Kelola profil VPN..."/>
+                <MenuItem x:Name="MenuDisconnectVpn" Header="Putuskan VPN terpilih"/>
+            </MenuItem>
+            <MenuItem Header="_Konfigurasi">
+                <MenuItem x:Name="MenuSettings" Header="Pengaturan aplikasi..."/>
+                <MenuItem x:Name="MenuDependencies" Header="Periksa dependensi..."/>
+                <MenuItem x:Name="MenuOpenData" Header="Buka folder data"/>
+            </MenuItem>
+            <MenuItem Header="_Bantuan">
+                <MenuItem x:Name="MenuShortcuts" Header="Daftar shortcut"/>
+                <MenuItem x:Name="MenuAbout" Header="Tentang"/>
+            </MenuItem>
+        </Menu>
+
+        <Border DockPanel.Dock="Top" Background="#111827" BorderBrush="#263348" BorderThickness="0,0,0,1" Padding="18,14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="Proper SSH Manager" FontSize="25" FontWeight="SemiBold"/>
+                    <TextBlock Text="Kelola SSH, SCP, VPN, dan workspace terminal dari satu tempat" Foreground="#94A3B8" Margin="0,3,0,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button x:Name="BtnAddHost" Content="＋ Tambah host"/>
+                    <Button x:Name="BtnScp" Content="⇅ SCP" ToolTip="Upload atau download file/folder melalui SCP (Ctrl+Shift+S)"/>
+                    <Button x:Name="BtnConnect" Content="▶ Buka SSH" Style="{StaticResource PrimaryButton}" Padding="18,8"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border DockPanel.Dock="Top" Background="#0F172A" BorderBrush="#263348" BorderThickness="0,0,0,1" Padding="14,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="2.2*" MinWidth="210"/>
+                    <ColumnDefinition Width="1.1*" MinWidth="130"/>
+                    <ColumnDefinition Width="1.5*" MinWidth="170"/>
+                    <ColumnDefinition Width="1.7*" MinWidth="205"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="3,0,8,0">
+                    <TextBlock Text="Cari host  (Ctrl+F)" Foreground="#94A3B8" FontSize="11" Margin="2,0,0,3"/>
+                    <TextBox x:Name="SearchBox" ToolTip="Cari nama, IP/hostname, user, tag, group, atau catatan"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="3,0,8,0">
+                    <TextBlock Text="Group" Foreground="#94A3B8" FontSize="11" Margin="2,0,0,3"/>
+                    <ComboBox x:Name="GroupFilter"/>
+                </StackPanel>
+                <StackPanel Grid.Column="2" Margin="3,0,8,0">
+                    <TextBlock Text="VPN saat connect" Foreground="#94A3B8" FontSize="11" Margin="2,0,0,3"/>
+                    <ComboBox x:Name="VpnOverride" DisplayMemberPath="Name" SelectedValuePath="Id"/>
+                </StackPanel>
+                <StackPanel Grid.Column="3" Margin="3,0,8,0">
+                    <TextBlock Text="Layout per tab" Foreground="#94A3B8" FontSize="11" Margin="2,0,0,3"/>
+                    <ComboBox x:Name="LayoutCombo" SelectedValuePath="Tag" ToolTip="Jika hanya satu host dipilih, host tersebut dibuka pada seluruh panel layout.">
+                        <ComboBoxItem Content="1 panel per tab" Tag="Single"/>
+                        <ComboBoxItem Content="Maks. 2 — kiri | kanan" Tag="TwoColumns"/>
+                        <ComboBoxItem Content="Maks. 2 — atas / bawah" Tag="TwoRows"/>
+                        <ComboBoxItem Content="Maks. 3 — atas 1, bawah 2" Tag="TopOneBottomTwo"/>
+                        <ComboBoxItem Content="Maks. 3 — atas 2, bawah 1" Tag="TopTwoBottomOne"/>
+                        <ComboBoxItem Content="Maks. 4 — grid 2 × 2" Tag="FourGrid"/>
+                    </ComboBox>
+                </StackPanel>
+                <Button x:Name="BtnTest" Grid.Column="4" Content="Tes koneksi" VerticalAlignment="Bottom" Padding="13,7"/>
+            </Grid>
+        </Border>
+
+        <Border DockPanel.Dock="Bottom" Background="#111827" BorderBrush="#263348" BorderThickness="0,1,0,0" Padding="12,7">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="StatusText" Text="Siap." Foreground="#94A3B8"/>
+                <TextBlock x:Name="CountText" Grid.Column="1" Text="0 host" Foreground="#94A3B8"/>
+            </Grid>
+        </Border>
+
+        <Grid Margin="14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="300"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Background="#0F172A" BorderBrush="#263348" BorderThickness="1" CornerRadius="5">
+                <DataGrid x:Name="HostGrid" AlternationCount="2">
+                    <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="Pilih" Width="52" IsReadOnly="False">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <CheckBox Tag="HostSelection" IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource DataGridRowCheckBox}" ToolTip="Pilih host untuk SSH, tes koneksi, atau SCP"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <DataGridTextColumn Header="★" Binding="{Binding FavoriteMark}" Width="34" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="Nama" Binding="{Binding Name}" Width="1.4*" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="Group" Binding="{Binding Group}" Width="0.8*" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="IP / Hostname" Binding="{Binding HostName}" Width="1.35*" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="User" Binding="{Binding Username}" Width="0.9*" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="Port" Binding="{Binding Port}" Width="60" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="Autentikasi" Binding="{Binding AuthDisplay}" Width="100" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                        <DataGridTextColumn Header="VPN" Binding="{Binding VpnDisplay}" Width="1.1*" IsReadOnly="True" ElementStyle="{StaticResource DataGridRowText}"/>
+                    </DataGrid.Columns>
+                </DataGrid>
+            </Border>
+
+            <Border Grid.Column="1" Margin="12,0,0,0" Background="#111827" BorderBrush="#263348" BorderThickness="1" CornerRadius="5" Padding="16">
+                <DockPanel>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,15,0,0">
+                        <Button x:Name="BtnEditHost" Content="Edit host" HorizontalContentAlignment="Center"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <Button x:Name="BtnDuplicateHost" Content="Duplikat"/>
+                            <Button x:Name="BtnDeleteHost" Grid.Column="1" Content="Hapus" Background="#7F1D1D" BorderBrush="#B91C1C"/>
+                        </Grid>
+                    </StackPanel>
+                    <StackPanel>
+                        <TextBlock x:Name="DetailName" Text="Pilih sebuah host" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="DetailEndpoint" Text="—" Foreground="#22C55E" Margin="0,5,0,18" TextWrapping="Wrap"/>
+
+                        <TextBlock Text="GROUP" Foreground="#64748B" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock x:Name="DetailGroup" Text="—" Margin="0,2,0,12"/>
+                        <TextBlock Text="AUTENTIKASI" Foreground="#64748B" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock x:Name="DetailAuth" Text="—" Margin="0,2,0,12"/>
+                        <TextBlock Text="VPN" Foreground="#64748B" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock x:Name="DetailVpn" Text="—" Margin="0,2,0,12" TextWrapping="Wrap"/>
+                        <TextBlock Text="TAGS" Foreground="#64748B" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock x:Name="DetailTags" Text="—" Margin="0,2,0,12" TextWrapping="Wrap"/>
+                        <TextBlock Text="CATATAN" Foreground="#64748B" FontSize="10" FontWeight="Bold"/>
+                        <TextBlock x:Name="DetailNotes" Text="—" Margin="0,2,0,12" TextWrapping="Wrap" MaxHeight="120"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

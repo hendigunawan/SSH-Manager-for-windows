@@ -189,8 +189,9 @@ function Confirm-Action {
 }
 
 function Set-Status {
-    param([string]$Text, [string]$Color = '#94A3B8')
+    param([string]$Text, [string]$Color = '#94A3B8', [string]$Details = '')
     $script:StatusText.Text = $Text
+    $script:StatusText.ToolTip = if ($Details) { $Details } else { $Text }
     $script:StatusText.Foreground = [Windows.Media.BrushConverter]::new().ConvertFromString($Color)
     [Windows.Forms.Application]::DoEvents()
 }
@@ -326,6 +327,37 @@ function Update-PendingScpStatus {
 
         try {
             $result = Get-Content -LiteralPath $statusFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($result.PSObject.Properties.Name -contains 'Kind' -and $result.Kind -eq 'ScpBatch') {
+                if (-not $result.IsComplete) {
+                    $runtimeMissing = $false
+                    if ([int]$result.ProcessId -gt 0) {
+                        $runtimeProcess = Get-Process -Id ([int]$result.ProcessId) -ErrorAction SilentlyContinue
+                        $runtimeMissing = ($null -eq $runtimeProcess)
+                        if (-not $runtimeMissing -and $result.ProcessStartedAt -and $runtimeProcess.StartTime) {
+                            $runtimeMissing = ($runtimeProcess.StartTime.ToUniversalTime().Ticks -ne ([datetime]$result.ProcessStartedAt).ToUniversalTime().Ticks)
+                        }
+                    }
+                    elseif (((Get-Date) - [datetime]$result.StartedAt).TotalSeconds -gt 120) { $runtimeMissing = $true }
+                    if ($runtimeMissing) {
+                        foreach ($row in $result.Results) {
+                            if ($row.State -in @('Pending','Running')) {
+                                $row.State = 'Interrupted'; $row.Message = 'Tab SCP ditutup atau runtime tidak berjalan.'; $result.FailedCount++
+                            }
+                        }
+                        $result.IsComplete = $true; $result.Succeeded = $false
+                        $result.FinishedAt = (Get-Date).ToString('o')
+                        $interruptedLog = Join-Path $script:Paths.LogsRoot ('scp-batch-{0}.json' -f $result.BatchId)
+                        Write-SSHManagerScpBatchStatus -Result $result -StatusFile $interruptedLog
+                    }
+                }
+                $batchSummary = Get-SSHManagerScpBatchStatusText -Result $result
+                if ($result.IsComplete) {
+                    Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
+                    [void]$script:PendingScpStatusFiles.Remove($statusFile)
+                }
+                Set-Status $batchSummary.Text $batchSummary.Color $batchSummary.Details
+                continue
+            }
             $itemSummary = Format-ScpItemSummary -FileCount ([int]$result.FileCount) -FolderCount ([int]$result.FolderCount) -ItemCount ([int]$result.ItemCount)
             $direction = [string]$result.Direction
             $hostName = [string]$result.HostName
@@ -1155,8 +1187,7 @@ function Show-ScpDialog {
                 $selected = @($visibleRows[0].Source)
             }
         }
-        if ($selected.Count -eq 0) { throw 'Pilih satu host untuk transfer SCP.' }
-        if ($selected.Count -gt 1) { throw 'Transfer SCP hanya memakai satu host. Pilih satu baris saja.' }
+        if ($selected.Count -eq 0) { throw 'Pilih satu atau beberapa node untuk transfer SCP.' }
         $hostEntry = $selected[0]
 
         if (-not (Get-Command scp.exe -ErrorAction SilentlyContinue)) {
@@ -1167,21 +1198,24 @@ function Show-ScpDialog {
         }
 
         $d = Read-XamlWindow @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Transfer SCP" Width="700" Height="570" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Transfer SCP" Width="840" Height="730" MinWidth="720" MinHeight="550" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
  <Window.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Label"><Setter Property="Foreground" Value="#CBD5E1"/><Setter Property="Padding" Value="0,8,0,3"/></Style><Style TargetType="TextBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#0F172A"/><Setter Property="BorderBrush" Value="#334155"/><Setter Property="Padding" Value="8,7"/></Style><Style TargetType="ComboBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#172033"/><Setter Property="BorderBrush" Value="#475569"/><Setter Property="Padding" Value="6,5"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="BorderBrush" Value="#34445D"/><Setter Property="Padding" Value="13,8"/><Setter Property="Margin" Value="4"/></Style></Window.Resources>
  <DockPanel Margin="20">
   <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0"><Button Content="Batal" IsCancel="True"/><Button x:Name="StartButton" Content="Mulai transfer" IsDefault="True" Background="#16A34A" BorderBrush="#22C55E" FontWeight="SemiBold"/></StackPanel>
-  <StackPanel>
+  <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
    <TextBlock Text="Transfer file dengan SCP" FontSize="23" FontWeight="SemiBold"/>
    <TextBlock Text="Transfer berjalan pada tab baru di Windows Terminal yang sama." Foreground="#94A3B8" Margin="0,3,0,14"/>
    <Border Background="#111827" BorderBrush="#263348" BorderThickness="1" CornerRadius="5" Padding="12" Margin="0,0,0,8"><StackPanel><TextBlock x:Name="HostNameText" FontSize="16" FontWeight="SemiBold"/><TextBlock x:Name="EndpointText" Foreground="#22C55E" Margin="0,3,0,0"/></StackPanel></Border>
+   <StackPanel x:Name="NodeControls"><Label Content="Atur path remote untuk node"/><ComboBox x:Name="NodeCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/><TextBlock Text="Pilih node untuk mengatur path masing-masing. Pilihan tersimpan saat berganti node." Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel>
    <Label Content="Arah transfer"/><ComboBox x:Name="DirectionCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/>
    <Label x:Name="LocalLabel" Content="Sumber lokal"/>
    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="LocalPathBox"/><Button x:Name="BrowseFileButton" Grid.Column="1" Content="Pilih file..." Margin="7,0,0,0"/><Button x:Name="BrowseFolderButton" Grid.Column="2" Content="Pilih folder..." Margin="7,0,0,0"/></Grid>
    <Label x:Name="RemoteLabel" Content="Tujuan remote"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RemotePathBox" ToolTip="Contoh: ~/upload/ atau /var/tmp/file.txt"/><Button x:Name="BrowseRemoteButton" Grid.Column="1" Content="Pilih remote..." Margin="7,0,0,0"/></Grid>
+   <Button x:Name="ApplyRemoteAllButton" Content="Terapkan path remote ke semua node" HorizontalAlignment="Left" Margin="0,7,0,0" ToolTip="Gunakan jika path yang sama tersedia pada semua node. ~/ mengikuti home user setiap node."/>
+   <TextBlock x:Name="NodeSummaryText" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,6,0,0"/>
    <StackPanel Margin="0,14,0,0"><CheckBox x:Name="RecursiveBox" Content="Recursive — transfer seluruh isi folder" Foreground="#E5E7EB" Margin="0,3"/><CheckBox x:Name="PreserveBox" Content="Pertahankan waktu modifikasi dan mode file (-p)" Foreground="#E5E7EB" Margin="0,3"/><CheckBox x:Name="CompressionBox" Content="Aktifkan kompresi selama transfer (-C)" Foreground="#E5E7EB" Margin="0,3"/></StackPanel>
    <TextBlock x:Name="DirectionHint" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,14,0,0"/>
-  </StackPanel>
+  </StackPanel></ScrollViewer>
  </DockPanel>
 </Window>
 '@
@@ -1201,8 +1235,19 @@ function Show-ScpDialog {
         $compression = Get-NamedControl $d 'CompressionBox'
         $hint = Get-NamedControl $d 'DirectionHint'
         $start = Get-NamedControl $d 'StartButton'
+        $nodeControls = Get-NamedControl $d 'NodeControls'
+        $nodeCombo = Get-NamedControl $d 'NodeCombo'
+        $applyRemoteAll = Get-NamedControl $d 'ApplyRemoteAllButton'
+        $nodeSummaryText = Get-NamedControl $d 'NodeSummaryText'
+        if ($selected.Count -lt 2) {
+            $nodeControls.Visibility = [Windows.Visibility]::Collapsed
+            $applyRemoteAll.Visibility = [Windows.Visibility]::Collapsed
+            $nodeSummaryText.Visibility = [Windows.Visibility]::Collapsed
+        }
+        $nodeCombo.ItemsSource = @($selected)
+        $nodeCombo.SelectedValue = [string]$hostEntry.Id
 
-        $hostNameText.Text = [string]$hostEntry.Name
+        $hostNameText.Text = if ($selected.Count -gt 1) { '{0} node dipilih — diproses berurutan dalam satu tab SCP' -f $selected.Count } else { [string]$hostEntry.Name }
         $endpointText.Text = ('{0}@{1}:{2}' -f $hostEntry.Username, $hostEntry.HostName, $hostEntry.Port)
         $directionCombo.ItemsSource = @(
             [pscustomobject]@{ Id = 'Upload'; Name = 'Upload — komputer ke server' },
@@ -1211,6 +1256,8 @@ function Show-ScpDialog {
         $directionCombo.SelectedValue = 'Upload'
 
         $transferState = [pscustomobject]@{
+            ActiveHostEntry = $hostEntry
+            NodeStates = @{}
             Direction = ''
             LocalPaths = @()
             LocalDisplay = ''
@@ -1260,13 +1307,78 @@ function Show-ScpDialog {
             $remotePathBox.ToolTip = if ($cleanValues.Count -gt 0) { $cleanValues -join "`n" } else { $null }
         }
 
+        $saveActiveRemote = {
+            $remoteText = $remotePathBox.Text.Trim()
+            if ($remoteText -ne $transferState.RemoteDisplay) {
+                $transferState.RemotePaths = @($remoteText)
+                $transferState.RemoteDisplay = $remoteText
+                $transferState.RemoteHasDirectory = $false
+                $transferState.RemoteFileCount = 0
+                $transferState.RemoteFolderCount = 0
+                $transferState.RemoteBrowsePath = if ($remoteText) { $remoteText } else { '~/' }
+            }
+            $transferState.NodeStates[[string]$transferState.ActiveHostEntry.Id] = [pscustomobject]@{
+                RemotePaths = [string[]]@($transferState.RemotePaths)
+                RemoteDisplay = [string]$transferState.RemoteDisplay
+                RemoteHasDirectory = [bool]$transferState.RemoteHasDirectory
+                RemoteFileCount = [int]$transferState.RemoteFileCount
+                RemoteFolderCount = [int]$transferState.RemoteFolderCount
+                RemoteBrowsePath = [string]$transferState.RemoteBrowsePath
+            }
+        }
+        $updateNodeSummary = {
+            $configured = 0
+            $lines = New-Object 'Collections.Generic.List[string]'
+            foreach ($node in $selected) {
+                $entry = $transferState.NodeStates[[string]$node.Id]
+                $nodePaths = @($entry.RemotePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                if ($nodePaths.Count -gt 0) { $configured++ }
+                $lines.Add(('{0}: {1}' -f $node.Name, ($nodePaths -join ', ')))
+            }
+            $nodeSummaryText.Text = 'Path remote terisi: {0}/{1} node. Arahkan mouse ke sini untuk melihat daftar path.' -f $configured, $selected.Count
+            $nodeSummaryText.ToolTip = $lines -join "`n"
+        }
+        $nodeCombo.Add_SelectionChanged({
+            if ($null -eq $nodeCombo.SelectedItem) { return }
+            & $saveActiveRemote
+            $transferState.ActiveHostEntry = $nodeCombo.SelectedItem
+            $entry = $transferState.NodeStates[[string]$transferState.ActiveHostEntry.Id]
+            & $setRemoteSelection -Values ([string[]]@($entry.RemotePaths)) -HasDirectory ([bool]$entry.RemoteHasDirectory) -BrowsePath ([string]$entry.RemoteBrowsePath) -FileCount ([int]$entry.RemoteFileCount) -FolderCount ([int]$entry.RemoteFolderCount)
+            $activeNode = $transferState.ActiveHostEntry
+            $endpointText.Text = '{0} | {1}@{2}:{3}' -f $activeNode.Name, $activeNode.Username, $activeNode.HostName, $activeNode.Port
+            & $updateNodeSummary
+        })
+        $applyRemoteAll.Add_Click({
+            & $saveActiveRemote
+            $activeId = [string]$transferState.ActiveHostEntry.Id
+            $entry = $transferState.NodeStates[$activeId]
+            foreach ($node in $selected) {
+                if ([string]$node.Id -eq $activeId) { continue }
+                $transferState.NodeStates[[string]$node.Id] = [pscustomobject]@{
+                    RemotePaths=[string[]]@($entry.RemotePaths); RemoteDisplay=[string]$entry.RemoteDisplay
+                    RemoteHasDirectory=[bool]$entry.RemoteHasDirectory; RemoteBrowsePath=[string]$entry.RemoteBrowsePath
+                    RemoteFileCount=0; RemoteFolderCount=0
+                }
+            }
+            & $updateNodeSummary
+        })
+        $remotePathBox.Add_LostKeyboardFocus({ & $saveActiveRemote; & $updateNodeSummary })
+
         $updateDirection = {
             $currentDirection = [string]$directionCombo.SelectedValue
             $isUpload = ($currentDirection -eq 'Upload')
             if ($transferState.Direction -ne $currentDirection) {
                 $transferState.Direction = $currentDirection
                 & $setLocalSelection -Values @() -HasDirectory $false
-                & $setRemoteSelection -Values @('~/') -HasDirectory $true -BrowsePath '~/' -FileCount 0 -FolderCount 1
+                $defaultRemote = if ($isUpload) { '~/' } else { '' }
+                foreach ($node in $selected) {
+                    $transferState.NodeStates[[string]$node.Id] = [pscustomobject]@{
+                        RemotePaths=@($defaultRemote); RemoteDisplay=$defaultRemote; RemoteHasDirectory=$false
+                        RemoteFileCount=0; RemoteFolderCount=0; RemoteBrowsePath='~/'
+                    }
+                }
+                & $setRemoteSelection -Values @($defaultRemote) -HasDirectory $false -BrowsePath '~/' -FileCount 0 -FolderCount 0
+                & $updateNodeSummary
                 $recursive.IsChecked = $false
             }
             $localLabel.Content = if ($isUpload) { 'Sumber lokal' } else { 'Folder tujuan lokal' }
@@ -1274,10 +1386,10 @@ function Show-ScpDialog {
             $browseFile.IsEnabled = $isUpload
             $browseFolder.Content = if ($isUpload) { 'Pilih folder...' } else { 'Folder tujuan...' }
             $hint.Text = if ($isUpload) {
-                'Upload: tombol Pilih file mendukung banyak file sekaligus. Semua file dikirim ke satu folder tujuan remote. Opsi Recursive otomatis aktif saat memilih folder.'
+                'Upload: sumber lokal yang sama dikirim ke semua node pilihan. Atur folder tujuan per node, atau terapkan path yang sama ke semua node. Recursive aktif otomatis jika sumber berupa folder.'
             }
             else {
-                'Download: pada Pilih remote gunakan Ctrl/Shift untuk memilih banyak file/folder, lalu tentukan satu folder tujuan lokal.'
+                'Download: pilih sumber remote per node dengan Ctrl/Shift. Jika banyak node, hasil disimpan dalam subfolder nama-node-ID di bawah folder tujuan lokal. Satu node memakai folder tujuan langsung.'
             }
         }
         $directionCombo.Add_SelectionChanged($updateDirection)
@@ -1309,19 +1421,23 @@ function Show-ScpDialog {
         })
         $browseRemote.Add_Click({
             try {
-                if ([string]$hostEntry.AuthType -eq 'Password') {
+                $activeNode = $transferState.ActiveHostEntry
+                & $saveActiveRemote
+                if ([string]$activeNode.AuthType -eq 'Password') {
                     Initialize-SSHManagerAskPass -Paths $script:Paths | Out-Null
                 }
-                Ensure-SSHManagerVpnForHost -HostEntry $hostEntry
+                Ensure-SSHManagerVpnForHost -HostEntry $activeNode
                 $isDownload = ([string]$directionCombo.SelectedValue -eq 'Download')
-                $remoteSelection = Show-RemotePathPicker -Owner $d -HostEntry $hostEntry -InitialPath $transferState.RemoteBrowsePath -AllowFiles:$isDownload -AllowMultiple:$isDownload
+                $remoteSelection = Show-RemotePathPicker -Owner $d -HostEntry $activeNode -InitialPath $transferState.RemoteBrowsePath -AllowFiles:$isDownload -AllowMultiple:$isDownload
                 if ($remoteSelection) {
                     $remoteSelectionPaths = New-Object 'Collections.Generic.List[string]'
                     for ($remotePathIndex = 0; $remotePathIndex -lt [int]$remoteSelection.Count; $remotePathIndex++) {
                         $remoteSelectionPaths.Add([string]$remoteSelection.Paths[$remotePathIndex])
                     }
                     & $setRemoteSelection -Values ([string[]]$remoteSelectionPaths.ToArray()) -HasDirectory ([bool]$remoteSelection.HasDirectory) -BrowsePath ([string]$remoteSelection.CurrentDirectory) -FileCount ([int]$remoteSelection.FileCount) -FolderCount ([int]$remoteSelection.FolderCount)
-                    if ($isDownload) { $recursive.IsChecked = [bool]$remoteSelection.HasDirectory }
+                    if ($isDownload -and [bool]$remoteSelection.HasDirectory) { $recursive.IsChecked = $true }
+                    & $saveActiveRemote
+                    & $updateNodeSummary
                 }
             }
             catch {
@@ -1341,6 +1457,20 @@ function Show-ScpDialog {
                 $remotePaths = @($remotePaths | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
                 if ($localPaths.Count -eq 0) { throw 'Path lokal wajib diisi.' }
                 if ($remotePaths.Count -eq 0) { throw 'Path remote wajib diisi.' }
+                & $saveActiveRemote
+                if ($selected.Count -gt 1) {
+                    $plan = New-SSHManagerScpBatchPlan -HostEntries $selected -Direction $direction -LocalPaths ([string[]]$localPaths) -NodeSelections $transferState.NodeStates -Recursive ([bool]$recursive.IsChecked) -PreserveTimes ([bool]$preserve.IsChecked) -Compression ([bool]$compression.IsChecked) -VpnOverride ([string]$script:VpnOverride.SelectedValue)
+                    $windowHelper = New-Object -TypeName Windows.Interop.WindowInteropHelper -ArgumentList $script:MainWindow
+                    $returnToManagerAfterScp = [bool]$script:Config.App.ReturnToManagerAfterScp
+                    if ($returnToManagerAfterScp) {
+                        $script:MainWindow.WindowState = [Windows.WindowState]::Minimized
+                        $managerMinimizedForTransfer = $true
+                    }
+                    $statusFile = Start-SSHManagerScpBatch -Plan $plan -Paths $script:Paths -TerminalProfile ([string]$script:Config.App.TerminalProfile) -StartMaximized ([bool]$script:Config.App.StartMaximized) -ReturnToManager $returnToManagerAfterScp -ManagerProcessId $PID -ManagerWindowHandle $windowHelper.Handle.ToInt64()
+                    $d.Tag = $statusFile
+                    $d.DialogResult = $true
+                    return
+                }
 
                 if ([string]$hostEntry.AuthType -eq 'Password') {
                     Initialize-SSHManagerAskPass -Paths $script:Paths | Out-Null
@@ -1396,7 +1526,10 @@ function Show-ScpDialog {
         })
 
         if ($d.ShowDialog()) {
-            Set-Status ("Membuka tab SCP {0} untuk host {1}." -f [string]$directionCombo.SelectedValue, $hostEntry.Name) '#22C55E'
+            if ($selected.Count -gt 1) {
+                Set-Status ("Menyiapkan SCP {0} untuk {1} node..." -f [string]$directionCombo.SelectedValue, $selected.Count) '#38BDF8'
+            }
+            else { Set-Status ("Membuka tab SCP {0} untuk host {1}." -f [string]$directionCombo.SelectedValue, $hostEntry.Name) '#22C55E' }
             if (-not [string]::IsNullOrWhiteSpace([string]$d.Tag)) {
                 Register-ScpStatusFile -StatusFile ([string]$d.Tag)
             }
@@ -1583,7 +1716,7 @@ try {
     (Get-NamedControl $script:MainWindow 'MenuExit').Add_Click({$script:MainWindow.Close()})
     (Get-NamedControl $script:MainWindow 'MenuOpenData').Add_Click({Start-Process explorer.exe -ArgumentList $script:Paths.DataRoot})
     (Get-NamedControl $script:MainWindow 'MenuAbout').Add_Click({
-        Show-Info "Proper SSH Manager 1.6.5`n`nPowerShell WPF SSH/SCP workspace manager untuk Windows 10/11.`nPassword dilindungi DPAPI CurrentUser." 'Tentang'
+        Show-Info "Proper SSH Manager 1.7.0`n`nPowerShell WPF SSH/SCP workspace manager untuk Windows 10/11.`nPassword dilindungi DPAPI CurrentUser." 'Tentang'
     })
     (Get-NamedControl $script:MainWindow 'MenuShortcuts').Add_Click({
         Show-Info "Ctrl+Alt+S       Buka manager dari Windows`nCtrl+Shift+F12  Buka manager dari Windows Terminal`n`nCtrl+F           Fokus pencarian`nCtrl+N           Tambah host`nCtrl+E           Edit host`nCtrl+D           Duplikat host`nCtrl+Shift+S     Transfer SCP`nDelete           Hapus host`nCtrl+Enter       Buka SSH`nF5               Refresh`nAlt+1..6         Pilih layout`nCheckbox Pilih   Pilih host untuk setiap panel`nCtrl+klik         Tambah pilihan row`nShift+klik        Pilih rentang row`nCtrl+A            Pilih semua row (saat tabel fokus)" 'Shortcut keyboard'

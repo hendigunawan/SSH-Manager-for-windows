@@ -104,7 +104,7 @@ if (-not $NoDesktopShortcut) { New-ApplicationShortcut -Path $desktopShortcut }
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ProperSSHManager'
 New-Item -Path $uninstallKey -Force | Out-Null
 Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'Proper SSH Manager'
-Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '1.6.5'
+Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '1.7.0'
 Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'Local PowerShell Application'
 Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installRoot
 Set-ItemProperty -Path $uninstallKey -Name NoModify -Value 1 -Type DWord
@@ -113,7 +113,7 @@ Set-ItemProperty -Path $uninstallKey -Name UninstallString -Value "powershell.ex
 $missing = @(Get-SSHManagerDependencyStatus | Where-Object { $_.Required -and -not $_.Available })
 Write-Host ''
 Write-Host 'Instalasi selesai.' -ForegroundColor Green
-Write-Host 'Versi aplikasi   : 1.6.5'
+Write-Host 'Versi aplikasi   : 1.7.0'
 Write-Host "Lokasi aplikasi : $installRoot"
 Write-Host "Lokasi data     : $($paths.DataRoot)"
 Write-Host "Profil Terminal : $terminalProfileName"

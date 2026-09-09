@@ -182,7 +182,7 @@
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock x:Name="StatusText" Text="Siap." Foreground="#94A3B8"/>
+                <TextBlock x:Name="StatusText" Text="Siap." Foreground="#94A3B8" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" ToolTipService.ShowDuration="60000"/>
                 <TextBlock x:Name="CountText" Grid.Column="1" Text="0 host" Foreground="#94A3B8"/>
             </Grid>
         </Border>

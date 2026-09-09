@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.7.0 — 2026-09-08
+
+- SCP mendukung banyak node dari checkbox **Pilih**, melalui antrean berurutan dalam satu tab Windows Terminal.
+- Upload memakai sumber lokal yang sama untuk setiap node; path tujuan remote dapat diatur per node.
+- Download dapat memilih sumber remote berbeda per node. Hasil banyak node dipisahkan ke subfolder nama-node-ID untuk mencegah benturan nama antar-node.
+- Dialog menyediakan pemilih node, browser remote per node, serta tombol **Terapkan path remote ke semua node**.
+- Node gagal tetap dicatat dan antrean berlanjut ke node berikutnya. Status bawah menampilkan node aktif, jumlah berhasil/gagal, serta total item sumber pada transfer yang berhasil.
+- Detail per node tersedia pada tooltip status dan laporan JSON dalam folder logs. Tab SCP yang ditutup sebelum selesai terdeteksi sebagai transfer terhenti.
+- VPN, port, jump host, key, password, dan host-key policy tetap mengikuti node masing-masing serta override VPN.
+- Manager dipulihkan sekali setelah seluruh antrean selesai. Jika ada kegagalan, tab menunggu Enter agar rincian dapat dibaca.
+- Manifest batch mempertahankan setiap path sebagai item terpisah; nama file dengan spasi, tanda petik, atau titik koma tidak digabung.
+- Menambahkan tes perilaku antrean dan integrasi runtime menggunakan proses SCP simulasi tanpa menghubungi server.
+
 ## 1.6.5 — 2026-08-15
 
 - Menambahkan kolom checkbox **Pilih** khusus agar beberapa host dapat dipetakan ke panel layout yang berbeda tanpa harus menahan Ctrl.

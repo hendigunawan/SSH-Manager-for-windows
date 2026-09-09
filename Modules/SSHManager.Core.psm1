@@ -4,6 +4,8 @@ $script:ApplicationName = 'Proper SSH Manager'
 $script:DataFolderName = 'ProperSSHManager'
 $script:ConfigVersion = 1
 
+. (Join-Path $PSScriptRoot 'SSHManager.ScpBatch.ps1')
+
 function Get-SSHManagerPaths {
     param([string]$ApplicationRoot)
 
@@ -1050,6 +1052,12 @@ function Import-SSHManagerConfig {
 }
 
 Export-ModuleMember -Function @(
+    'New-SSHManagerScpBatchPlan',
+    'New-SSHManagerScpBatchStatus',
+    'Write-SSHManagerScpBatchStatus',
+    'Invoke-SSHManagerScpBatch',
+    'Get-SSHManagerScpBatchStatusText',
+    'Start-SSHManagerScpBatch',
     'Get-SSHManagerPaths',
     'New-SSHManagerDefaultConfig',
     'Initialize-SSHManagerData',

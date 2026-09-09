@@ -51,7 +51,13 @@ Setelah extract, paket juga dapat divalidasi sebelum instalasi:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\Smoke-Test.ps1
 ```
 
-Tes tersebut memeriksa syntax seluruh script, memuat semua XAML, dan mencoba siklus config default pada folder sementara.
+Tes tersebut memeriksa syntax seluruh script, memuat semua XAML, dan mencoba siklus config default pada folder sementara. Tes perilaku batch dapat dijalankan dengan:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\ScpBatch-Test.ps1
+```
+
+Tes batch memakai folder sementara dan transfer simulasi, tanpa menghubungi server. Untuk pengembangan di Linux/WSL, tes batas runtime dengan executable SCP simulasi tersedia melalui `python3 Tests/ScpRuntime-Test.py --pwsh /path/to/pwsh`. Uji tampilan WPF, Windows Terminal, DPAPI, dan VPN tetap dilakukan di Windows.
 
 ## Instalasi
 
@@ -105,19 +111,26 @@ Jika opsi **Tutup hanya tab manager setelah terminal dibuka** aktif, aplikasi WP
 
 ## Transfer SCP
 
-1. Pilih tepat satu host.
+1. Centang kolom **Pilih** pada satu atau beberapa node. Jumlah node SCP tidak dibatasi oleh layout SSH.
 2. Klik tombol **SCP**, buka **Host → Transfer SCP**, atau tekan `Ctrl+Shift+S`.
 3. Pilih **Upload** atau **Download**.
-4. Untuk upload banyak file, klik **Pilih file...** lalu pilih beberapa file sekaligus. Semua file akan dikirim ke satu folder tujuan remote.
+4. Untuk upload banyak file, klik **Pilih file...** lalu pilih beberapa file sekaligus. Sumber lokal yang sama dikirim ke semua node pilihan.
 5. Untuk upload sebuah folder, klik **Pilih folder...**; opsi **Recursive** akan aktif otomatis.
 6. Untuk download, klik **Pilih remote...**, lalu gunakan `Ctrl+klik` atau `Shift+klik` untuk memilih banyak file/folder. Setelah itu pilih satu folder tujuan lokal.
 7. Pada browser remote, gunakan Home, Naik, Refresh, atau double-click folder. Path tunggal tetap dapat diketik manual, misalnya `~/upload/` atau `/var/tmp/file.txt`.
 8. **Recursive** otomatis aktif jika pilihan mengandung folder. Opsi preserve dan kompresi dapat diaktifkan sesuai kebutuhan.
-9. Klik **Mulai transfer**. Progres bawaan `scp.exe` tampil pada tab baru di jendela Windows Terminal yang sama.
+9. Jika banyak node dipilih, gunakan dropdown **Atur path remote untuk node** untuk menentukan path dan membuka browser remote pada masing-masing node. Berpindah node mempertahankan pilihan sebelumnya. **Terapkan path remote ke semua node** menyalin path node aktif ke semua node; gunakan hanya bila path tersebut berlaku di semuanya. Contoh `~/OLTS_MME/log` mengikuti home user masing-masing, sedangkan `/home/mme/...` tetap path absolut yang sama.
+10. Arahkan mouse pada **Path remote terisi** untuk memeriksa daftar path, lalu klik **Mulai transfer**. Progres bawaan `scp.exe` tampil pada satu tab Windows Terminal. Banyak node diproses **berurutan**; node gagal tidak menghentikan node berikutnya.
 
-Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.6.5**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
+Download banyak node menghasilkan folder seperti `D:\Downloads\node-a-<ID>\` dan `D:\Downloads\node-b-<ID>\`. Penanda ID juga membedakan node dengan nama sama. Download satu node tetap memakai folder tujuan langsung. Transfer berikutnya ke node/path yang sama mengikuti perilaku penimpaan file SCP; subfolder melindungi benturan **antar-node**, bukan menyimpan versi file.
 
-Secara default, manager diminimalkan selama SCP berjalan. Setelah transfer berhasil, proses PowerShell SCP berakhir, tab SCP ditutup otomatis, dan jendela manager yang sama dipulihkan ke depan. Status bawah diperbarui menjadi hasil akhir seperti **Selesai SCP Download: 8 file dari host el.d.mme.** atau **Selesai SCP Upload: 1 folder ke host el.d.mme.** Jika transfer gagal, hasil tetap ditampilkan sampai Anda menekan Enter untuk kembali ke manager dan status bawah menampilkan pesan gagal. Perilaku kembali otomatis ini dapat diubah melalui **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
+Status bawah menampilkan progres `[1/3]` lalu ringkasan, misalnya **Selesai SCP Upload: 3 node | 3 berhasil, 0 gagal | Berhasil: 6 file** untuk dua file yang dikirim ke tiga node. Jumlah tersebut menghitung pilihan sumber per node, bukan seluruh isi di dalam folder recursive. Path yang diketik manual atau diterapkan ke node lain dilaporkan sebagai item bila tipe file/folder belum diketahui. Arahkan mouse ke status untuk melihat hasil, path, dan pesan error tiap node. Laporan lengkap tersimpan di `%LOCALAPPDATA%\ProperSSHManager\logs\scp-batch-<ID>.json`.
+
+VPN diperiksa untuk node yang sedang diproses. Kegagalan VPN, autentikasi, pretest koneksi, atau SCP dicatat pada node tersebut. Jika memakai Jump Host, pretest TCP langsung dilewati dan koneksi dilakukan lewat SSH jump host. Opsi **Tes koneksi sebelum membuka** tetap mengikuti pengaturan aplikasi. Menutup tab batch sebelum selesai akan membuat manager menandai node yang belum selesai sebagai terhenti; file yang sudah berhasil tersalin tetap ada.
+
+Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.7.0**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
+
+Secara default, manager diminimalkan selama SCP berjalan. Setelah seluruh node berhasil, proses PowerShell SCP berakhir, tab SCP ditutup otomatis, dan jendela manager yang sama dipulihkan ke depan. Status bawah diperbarui menjadi hasil akhir seperti **Selesai SCP Download: 8 file dari host el.d.mme.** atau **Selesai SCP Upload: 1 folder ke host el.d.mme.** Jika ada node gagal, hasil tetap ditampilkan sampai Anda menekan Enter untuk kembali ke manager dan status bawah menampilkan pesan gagal. Perilaku kembali otomatis ini dapat diubah melalui **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
 
 SCP otomatis memakai port, username, jump host, kebijakan host key, metode autentikasi, serta pilihan VPN yang sama dengan host. Untuk password otomatis, password tetap dibaca melalui helper DPAPI dan tidak dimasukkan pada argumen proses.
 

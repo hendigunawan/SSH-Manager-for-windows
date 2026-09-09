@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]
-param()
+param([switch]$SkipWindowsChecks)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
@@ -12,6 +12,8 @@ Write-Host 'Proper SSH Manager smoke test' -ForegroundColor Cyan
 $requiredFiles = @(
     'SSHManager.ps1',
     'Modules\SSHManager.Core.psm1',
+    'Modules\SSHManager.ScpBatch.ps1',
+    'Tests\ScpBatch-Test.ps1',
     'Runtime\Connect-SSH.ps1',
     'Runtime\Connect-SCP.ps1',
     'Runtime\AskPass.cs',
@@ -41,11 +43,13 @@ foreach ($file in $powershellFiles) {
 }
 
 try {
-    Add-Type -AssemblyName @('PresentationFramework', 'PresentationCore', 'WindowsBase', 'System.Xaml')
+    if (-not $SkipWindowsChecks) { Add-Type -AssemblyName @('PresentationFramework', 'PresentationCore', 'WindowsBase', 'System.Xaml') }
     [xml]$xaml = Get-Content -LiteralPath (Join-Path $applicationRoot 'UI\MainWindow.xaml') -Raw -Encoding UTF8
-    $reader = New-Object Xml.XmlNodeReader $xaml
-    try { [void][Windows.Markup.XamlReader]::Load($reader) }
-    finally { $reader.Close() }
+    if (-not $SkipWindowsChecks) {
+        $reader = New-Object Xml.XmlNodeReader $xaml
+        try { [void][Windows.Markup.XamlReader]::Load($reader) }
+        finally { $reader.Close() }
+    }
 
     $mainSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'SSHManager.ps1') -Raw -Encoding UTF8
     $inlineWindows = [regex]::Matches($mainSource, "(?s)@'\r?\n(<Window.*?</Window>)\r?\n'@")
@@ -54,9 +58,11 @@ try {
     }
     foreach ($match in $inlineWindows) {
         [xml]$inlineXaml = $match.Groups[1].Value
-        $inlineReader = New-Object Xml.XmlNodeReader $inlineXaml
-        try { [void][Windows.Markup.XamlReader]::Load($inlineReader) }
-        finally { $inlineReader.Close() }
+        if (-not $SkipWindowsChecks) {
+            $inlineReader = New-Object Xml.XmlNodeReader $inlineXaml
+            try { [void][Windows.Markup.XamlReader]::Load($inlineReader) }
+            finally { $inlineReader.Close() }
+        }
     }
 
     $themeStyles = [regex]::Matches($mainSource, "(?s)\[xml\]\`$\w+StyleXaml = @'\r?\n(.*?)\r?\n'@")
@@ -65,15 +71,17 @@ try {
     }
     foreach ($match in $themeStyles) {
         [xml]$styleXaml = $match.Groups[1].Value
-        $styleReader = New-Object Xml.XmlNodeReader $styleXaml
-        try { [void][Windows.Markup.XamlReader]::Load($styleReader) }
-        finally { $styleReader.Close() }
+        if (-not $SkipWindowsChecks) {
+            $styleReader = New-Object Xml.XmlNodeReader $styleXaml
+            try { [void][Windows.Markup.XamlReader]::Load($styleReader) }
+            finally { $styleReader.Close() }
+        }
     }
 }
 catch { $failures.Add("MainWindow.xaml: $($_.Exception.Message)") }
 
 try {
-    Import-Module (Join-Path $applicationRoot 'Modules\SSHManager.Core.psm1') -Force
+    Import-Module (Join-Path $applicationRoot 'Modules\SSHManager.Core.psm1') -Force -DisableNameChecking
     $oldData = $env:PROPER_SSH_MANAGER_DATA
     $testData = Join-Path ([IO.Path]::GetTempPath()) ("ProperSSHManagerTest-{0}" -f [guid]::NewGuid().ToString('N'))
     $env:PROPER_SSH_MANAGER_DATA = $testData
@@ -86,6 +94,7 @@ try {
         if ($config.App.DefaultLayout -ne 'Single') { throw 'Layout default tidak sesuai.' }
         if (-not [bool]$config.App.ReturnToManagerAfterScp) { throw 'Kembali ke manager setelah SCP belum aktif secara default.' }
 
+        if (-not $SkipWindowsChecks) {
         $helperRuntime = Join-Path $testData 'HelperRuntime'
         New-Item -ItemType Directory -Path $helperRuntime -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $applicationRoot 'Runtime\AskPass.cs') -Destination $helperRuntime
@@ -100,6 +109,7 @@ try {
         }
         finally {
             [Environment]::SetEnvironmentVariable('LIB', $oldCompilerLib, [EnvironmentVariableTarget]::Process)
+        }
         }
     }
     finally {
@@ -116,7 +126,7 @@ try {
     $uninstallerSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Uninstall.ps1') -Raw -Encoding UTF8
     $coreSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Modules\SSHManager.Core.psm1') -Raw -Encoding UTF8
 
-    if ($version -ne '1.6.5') { throw "VERSION tidak sesuai: $version" }
+    if ($version -ne '1.7.0') { throw "VERSION tidak sesuai: $version" }
     if ($installerSource -notmatch "closeOnExit\s+=\s+'always'") { throw 'Profil Windows Terminal belum memakai closeOnExit=always.' }
     if ($installerSource -notmatch "keys\s+=\s+'ctrl\+shift\+f12'") { throw 'Shortcut Windows Terminal belum terdaftar.' }
     if ($installerSource -notmatch "Hotkey\s+=\s+'CTRL\+ALT\+S'") { throw 'Shortcut Windows global belum terdaftar.' }
@@ -126,7 +136,7 @@ try {
     if ($uninstallerSource -notmatch "Fragments\\ProperSSHManager") { throw 'Uninstaller belum membersihkan JSON fragment Windows Terminal.' }
     if ($coreSource -notmatch '\$arguments\.Add\(''0''\)') { throw 'Launcher SSH belum menargetkan window Terminal terakhir.' }
     if ($coreSource -notmatch "GetEnvironmentVariable\('LIB', \[EnvironmentVariableTarget\]::Process\)") { throw 'Kompilasi password helper belum mengisolasi environment LIB.' }
-    if ($coreSource -notmatch "SetEnvironmentVariable\('LIB', \$originalCompilerLib, \[EnvironmentVariableTarget\]::Process\)") { throw 'Environment LIB belum dipulihkan setelah kompilasi helper.' }
+    if ($coreSource -notmatch 'SetEnvironmentVariable\(''LIB'', \$originalCompilerLib, \[EnvironmentVariableTarget\]::Process\)') { throw 'Environment LIB belum dipulihkan setelah kompilasi helper.' }
     if ($coreSource -notmatch 'function Invoke-SSHManagerRemoteDirectoryList') { throw 'Pembaca folder remote belum tersedia.' }
     if ($coreSource -notmatch '\[scriptblock\]\$ProgressAction') { throw 'Callback progres koneksi belum tersedia.' }
     if ($coreSource -notmatch 'while \(-not \$task\.IsCompleted\)') { throw 'Tes TCP masih menunggu timeout secara blocking.' }
@@ -210,4 +220,8 @@ if ($failures.Count -gt 0) {
     throw "$($failures.Count) pemeriksaan gagal."
 }
 
-Write-Host 'PASS  Struktur paket, syntax PowerShell, XAML, config, dan integrasi Windows Terminal valid.' -ForegroundColor Green
+if ($SkipWindowsChecks) {
+    Write-Host 'PASS  Struktur, parser PowerShell, XML, config, dan pemeriksaan integrasi statis.' -ForegroundColor Green
+    Write-Host 'SKIP  Pemuatan WPF native dan kompilasi helper Windows (jalankan kembali tanpa -SkipWindowsChecks di Windows).' -ForegroundColor Yellow
+}
+else { Write-Host 'PASS  Struktur paket, syntax PowerShell, XAML, config, dan integrasi Windows Terminal valid.' -ForegroundColor Green }

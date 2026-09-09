@@ -168,6 +168,29 @@ function Expand-JoinedRemotePathList {
     return @($singlePath)
 }
 
+function Expand-JoinedLocalPathList {
+    param([string[]]$Paths)
+
+    # Batch plan versi lama dapat menyimpan beberapa path lokal Windows
+    # sebagai satu string, contoh:
+    #   D:\dir\file1.a D:\dir\file2.a
+    # Split hanya sebelum root path Windows berikutnya supaya spasi yang
+    # memang merupakan bagian dari nama folder/file tidak ikut terpecah.
+    if ($Paths.Count -ne 1) { return @($Paths) }
+
+    $singlePath = [string]$Paths[0]
+    $pattern = '\s+(?=(?:[A-Za-z]:[\\/]|\\\\))'
+    if ($singlePath -notmatch $pattern) { return @($singlePath) }
+
+    $splitPaths = @(
+        [regex]::Split($singlePath.Trim(), $pattern) |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+
+    if ($splitPaths.Count -gt 1) { return @($splitPaths) }
+    return @($singlePath)
+}
+
 try {
     $module = Join-Path $ApplicationRoot 'Modules\SSHManager.Core.psm1'
     Import-Module $module -DisableNameChecking
@@ -225,8 +248,14 @@ try {
 
         $localPaths = @(ConvertFrom-EncodedPathList -EncodedValue $LocalPathsBase64 -Label 'path lokal')
         $remotePaths = @(ConvertFrom-EncodedPathList -EncodedValue $RemotePathsBase64 -Label 'path remote')
-        if ($Direction -eq 'Download' -and -not $BatchWorker) {
+        # Normalisasi daftar path remote untuk download, termasuk BatchWorker.
+        # Batch plan lama dapat menyimpan beberapa path sebagai satu string yang dipisahkan spasi.
+        if ($Direction -eq 'Download') {
             $remotePaths = @(Expand-JoinedRemotePathList -Paths ([string[]]$remotePaths))
+        }
+        elseif ($Direction -eq 'Upload') {
+            # Normalisasi multi-file lokal pada BatchWorker juga.
+            $localPaths = @(Expand-JoinedLocalPathList -Paths ([string[]]$localPaths))
         }
         if ($localPaths.Count -eq 0) { throw 'Path lokal wajib diisi.' }
         if ($remotePaths.Count -eq 0) { throw 'Path remote wajib diisi.' }
@@ -381,16 +410,40 @@ try {
         }
 
         if ($BatchWorker) {
-            # Inherit the console handles so scp keeps its native progress meter.
-            # A PowerShell stdout pipeline would turn that terminal into a pipe.
+            # Inherit console handles supaya progress native SCP tetap muncul.
             $scpStartInfo = New-Object Diagnostics.ProcessStartInfo
             $scpStartInfo.FileName = $scpCommand.Source
-            $scpStartInfo.Arguments = Join-WindowsCommandLine -Arguments $scpArgs.ToArray()
             $scpStartInfo.UseShellExecute = $false
+            $scpStartInfo.CreateNoWindow = $false
+
+            # PENTING:
+            # Setiap item $scpArgs harus menjadi argument SCP terpisah.
+            $argumentString = @(
+                foreach ($arg in $scpArgs.ToArray()) {
+                    if ($arg -match '[\s"]') {
+                        '"' + ($arg -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+                    }
+                    else {
+                        $arg
+                    }
+                }
+            ) -join ' '
+
+            $scpStartInfo.Arguments = $argumentString
+
             $scpProcess = [Diagnostics.Process]::Start($scpStartInfo)
-            if ($null -eq $scpProcess) { throw 'Proses SCP tidak dapat dimulai.' }
-            try { $scpProcess.WaitForExit(); $exitCode = $scpProcess.ExitCode }
-            finally { $scpProcess.Dispose() }
+
+            if ($null -eq $scpProcess) {
+                throw 'Proses SCP tidak dapat dimulai.'
+            }
+
+            try {
+                $scpProcess.WaitForExit()
+                $exitCode = $scpProcess.ExitCode
+            }
+            finally {
+                $scpProcess.Dispose()
+            }
         }
         else {
             & $scpCommand.Source @($scpArgs.ToArray())

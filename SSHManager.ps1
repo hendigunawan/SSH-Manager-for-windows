@@ -20,6 +20,7 @@ $script:IsRefreshing = $false
 $script:CheckedHostIds = New-Object 'Collections.Generic.HashSet[string]'
 $script:PendingScpStatusFiles = @{}
 $script:ScpStatusTimer = $null
+. (Join-Path $script:ApplicationRoot 'UI\RemoteEditor.ps1')
 
 $createdNew = $false
 $script:SingleInstanceMutex = New-Object Threading.Mutex($true, 'Local\ProperSSHManager.MainWindow', [ref]$createdNew)
@@ -1007,7 +1008,8 @@ function Show-RemotePathPicker {
         [Parameter(Mandatory = $true)]$HostEntry,
         [string]$InitialPath = '~/',
         [switch]$AllowFiles,
-        [switch]$AllowMultiple
+        [switch]$AllowMultiple,
+        [switch]$FilesOnly
     )
 
     $pickerWindow = Read-XamlWindow @'
@@ -1043,13 +1045,14 @@ function Show-RemotePathPicker {
     $remoteList = Get-NamedControl $pickerWindow 'RemoteList'
     $status = Get-NamedControl $pickerWindow 'StatusText'
     $select = Get-NamedControl $pickerWindow 'SelectButton'
-    $allowFileSelection = [bool]$AllowFiles
-    $allowMultipleSelection = [bool]$AllowMultiple
+    $allowFileSelection = [bool]$AllowFiles -or [bool]$FilesOnly
+    $filesOnlySelection = [bool]$FilesOnly
+    $allowMultipleSelection = [bool]$AllowMultiple -and -not $filesOnlySelection
     $remoteList.SelectionMode = if ($allowMultipleSelection) { [Windows.Controls.SelectionMode]::Extended } else { [Windows.Controls.SelectionMode]::Single }
 
     $endpoint.Text = ('{0}@{1}:{2}' -f $HostEntry.Username, $HostEntry.HostName, $HostEntry.Port)
     $pathBox.Text = if ([string]::IsNullOrWhiteSpace($InitialPath)) { '~/' } else { $InitialPath }
-    $select.Content = if ($allowFileSelection) { 'Pilih sumber' } else { 'Pilih tujuan' }
+    $select.Content = if ($filesOnlySelection) { 'Edit file ini' } elseif ($allowFileSelection) { 'Pilih sumber' } else { 'Pilih tujuan' }
 
     $loadRemotePath = {
         param([string]$RequestedPath)
@@ -1142,6 +1145,10 @@ function Show-RemotePathPicker {
         }
         if ($hasFile -and -not $allowFileSelection) {
             [Windows.MessageBox]::Show($pickerWindow, 'Untuk tujuan upload, pilih sebuah folder remote.', 'Pilih folder', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Information) | Out-Null
+            return
+        }
+        if ($filesOnlySelection -and ($selectedCount -ne 1 -or $hasDirectory)) {
+            $status.Text = 'Pilih satu file teks. Double-click folder untuk membukanya.'
             return
         }
         if ($selectedCount -gt 0) {
@@ -1707,6 +1714,7 @@ try {
         BtnDuplicateHost = { Duplicate-Host }; MenuDuplicateHost = { Duplicate-Host }
         BtnDeleteHost = { Delete-Hosts }; MenuDeleteHost = { Delete-Hosts }
         BtnScp = { Show-ScpDialog }; MenuScp = { Show-ScpDialog }
+        BtnEditFile = { Show-RemoteTextEditor }; MenuEditFile = { Show-RemoteTextEditor }
         BtnConnect = { Connect-SelectedHosts }; BtnTest = { Test-SelectedHosts }
         MenuVpnProfiles = { Show-VpnManager }; MenuSettings = { Show-SettingsDialog }
         MenuDependencies = { Show-DependencyDialog }; MenuImport = { Import-ConfigurationUi }
@@ -1716,10 +1724,10 @@ try {
     (Get-NamedControl $script:MainWindow 'MenuExit').Add_Click({$script:MainWindow.Close()})
     (Get-NamedControl $script:MainWindow 'MenuOpenData').Add_Click({Start-Process explorer.exe -ArgumentList $script:Paths.DataRoot})
     (Get-NamedControl $script:MainWindow 'MenuAbout').Add_Click({
-        Show-Info "Proper SSH Manager 1.7.0`n`nPowerShell WPF SSH/SCP workspace manager untuk Windows 10/11.`nPassword dilindungi DPAPI CurrentUser." 'Tentang'
+        Show-Info "Proper SSH Manager 1.8.0`n`nPowerShell WPF SSH/SCP workspace manager untuk Windows 10/11.`nPassword dilindungi DPAPI CurrentUser." 'Tentang'
     })
     (Get-NamedControl $script:MainWindow 'MenuShortcuts').Add_Click({
-        Show-Info "Ctrl+Alt+S       Buka manager dari Windows`nCtrl+Shift+F12  Buka manager dari Windows Terminal`n`nCtrl+F           Fokus pencarian`nCtrl+N           Tambah host`nCtrl+E           Edit host`nCtrl+D           Duplikat host`nCtrl+Shift+S     Transfer SCP`nDelete           Hapus host`nCtrl+Enter       Buka SSH`nF5               Refresh`nAlt+1..6         Pilih layout`nCheckbox Pilih   Pilih host untuk setiap panel`nCtrl+klik         Tambah pilihan row`nShift+klik        Pilih rentang row`nCtrl+A            Pilih semua row (saat tabel fokus)" 'Shortcut keyboard'
+        Show-Info "Ctrl+Alt+S       Buka manager dari Windows`nCtrl+Shift+F12  Buka manager dari Windows Terminal`n`nCtrl+F           Fokus pencarian`nCtrl+N           Tambah host`nCtrl+E           Edit host`nCtrl+D           Duplikat host`nCtrl+Shift+S     Transfer SCP`nCtrl+Shift+E     Edit file remote`nDelete           Hapus host`nCtrl+Enter       Buka SSH`nF5               Refresh`nAlt+1..6         Pilih layout`nCheckbox Pilih   Pilih host untuk setiap panel`nCtrl+klik         Tambah pilihan row`nShift+klik        Pilih rentang row`nCtrl+A            Pilih semua row (saat tabel fokus)" 'Shortcut keyboard'
     })
     (Get-NamedControl $script:MainWindow 'MenuDisconnectVpn').Add_Click({
         $id = [string]$script:VpnOverride.SelectedValue
@@ -1788,6 +1796,7 @@ try {
             $eventArgs.Handled = $true
         }
         elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::N) { Add-Host; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Show-RemoteTextEditor; $eventArgs.Handled = $true }
         elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Edit-Host; $eventArgs.Handled = $true }
         elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::D) { Duplicate-Host; $eventArgs.Handled = $true }
         elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::S) { Show-ScpDialog; $eventArgs.Handled = $true }

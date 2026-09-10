@@ -106,6 +106,7 @@
                 <MenuItem x:Name="MenuDeleteHost" Header="Hapus host" InputGestureText="Delete"/>
                 <Separator/>
                 <MenuItem x:Name="MenuScp" Header="Transfer SCP..." InputGestureText="Ctrl+Shift+S"/>
+                <MenuItem x:Name="MenuEditFile" Header="Edit file remote..." InputGestureText="Ctrl+Shift+E"/>
             </MenuItem>
             <MenuItem Header="_VPN">
                 <MenuItem x:Name="MenuVpnProfiles" Header="Kelola profil VPN..."/>
@@ -135,6 +136,7 @@
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                     <Button x:Name="BtnAddHost" Content="＋ Tambah host"/>
                     <Button x:Name="BtnScp" Content="⇅ SCP" ToolTip="Upload atau download file/folder melalui SCP (Ctrl+Shift+S)"/>
+                    <Button x:Name="BtnEditFile" Content="Edit file" ToolTip="Buka editor teks untuk file remote (Ctrl+Shift+E)"/>
                     <Button x:Name="BtnConnect" Content="▶ Buka SSH" Style="{StaticResource PrimaryButton}" Padding="18,8"/>
                 </StackPanel>
             </Grid>

@@ -13,6 +13,12 @@ $requiredFiles = @(
     'SSHManager.ps1',
     'Modules\SSHManager.Core.psm1',
     'Modules\SSHManager.ScpBatch.ps1',
+    'Modules\SSHManager.RemoteEditor.ps1',
+    'UI\RemoteEditor.ps1',
+    'UI\RemoteEditor.xaml',
+    'UI\UnsavedChanges.xaml',
+    'Runtime\RemoteTextFile.py',
+    'Tests\RemoteEditor-Test.ps1',
     'Tests\ScpBatch-Test.ps1',
     'Runtime\Connect-SSH.ps1',
     'Runtime\Connect-SCP.ps1',
@@ -44,11 +50,13 @@ foreach ($file in $powershellFiles) {
 
 try {
     if (-not $SkipWindowsChecks) { Add-Type -AssemblyName @('PresentationFramework', 'PresentationCore', 'WindowsBase', 'System.Xaml') }
-    [xml]$xaml = Get-Content -LiteralPath (Join-Path $applicationRoot 'UI\MainWindow.xaml') -Raw -Encoding UTF8
-    if (-not $SkipWindowsChecks) {
-        $reader = New-Object Xml.XmlNodeReader $xaml
-        try { [void][Windows.Markup.XamlReader]::Load($reader) }
-        finally { $reader.Close() }
+    foreach ($xamlFile in @(Get-ChildItem -LiteralPath (Join-Path $applicationRoot 'UI') -Filter '*.xaml' -File)) {
+        [xml]$xaml = Get-Content -LiteralPath $xamlFile.FullName -Raw -Encoding UTF8
+        if (-not $SkipWindowsChecks) {
+            $reader = New-Object Xml.XmlNodeReader $xaml
+            try { [void][Windows.Markup.XamlReader]::Load($reader) }
+            finally { $reader.Close() }
+        }
     }
 
     $mainSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'SSHManager.ps1') -Raw -Encoding UTF8
@@ -126,7 +134,7 @@ try {
     $uninstallerSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Uninstall.ps1') -Raw -Encoding UTF8
     $coreSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Modules\SSHManager.Core.psm1') -Raw -Encoding UTF8
 
-    if ($version -ne '1.7.0') { throw "VERSION tidak sesuai: $version" }
+    if ($version -ne '1.8.0') { throw "VERSION tidak sesuai: $version" }
     if ($installerSource -notmatch "closeOnExit\s+=\s+'always'") { throw 'Profil Windows Terminal belum memakai closeOnExit=always.' }
     if ($installerSource -notmatch "keys\s+=\s+'ctrl\+shift\+f12'") { throw 'Shortcut Windows Terminal belum terdaftar.' }
     if ($installerSource -notmatch "Hotkey\s+=\s+'CTRL\+ALT\+S'") { throw 'Shortcut Windows global belum terdaftar.' }

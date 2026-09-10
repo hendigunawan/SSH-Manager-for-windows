@@ -95,6 +95,19 @@ sys.exit(23 if os.environ.get('SCP_TEST_FAIL') and any('user-b@node-b:' in a for
                 assert result['Results'][2]['ItemCount'] == 1 and result['Results'][2]['FileCount'] == result['Results'][2]['FolderCount'] == 0, result
             print('PASS runtime:', direction, '3 nodes; paths, credentials/options, partial failure, final status and log')
 
+        # Keep the uploaded v1.7.5 fix: an older batch can contain a joined source string.
+        legacy_jobs = [dict(jobs[0], RemotePaths=['/home/itch/OLTS_ITCH/libs/libFIX5.a /home/itch/OLTS_ITCH/libs/libmisc.a'])]
+        plan.write_text(json.dumps(dict(Version=1, BatchId='legacy-joined', Direction='Download', Jobs=legacy_jobs)))
+        capture.write_text('')
+        run = subprocess.run([args.pwsh, '-NoProfile', '-File', str(app / 'Runtime/Connect-SCP.ps1'),
+                              '-ApplicationRoot', str(app), '-BatchFile', str(plan), '-StatusFile', str(status)],
+                             env=env, text=True, capture_output=True, timeout=30)
+        legacy_status = json.loads(status.read_text(encoding='utf-8-sig'))
+        legacy_calls = [json.loads(line) for line in capture.read_text().splitlines()]
+        assert legacy_status['SuccessCount'] == 1 and len(legacy_calls) == 1, (legacy_status, run.stdout, run.stderr)
+        assert legacy_calls[0][-3:-1] == ['user-a@node-a:/home/itch/OLTS_ITCH/libs/libFIX5.a', 'user-a@node-a:/home/itch/OLTS_ITCH/libs/libmisc.a'], legacy_calls
+        print('PASS v1.7.5 compatibility: joined batch download sources become separate native SCP arguments')
+
         # A worker's native SCP must retain stdout TTY for its progress meter,
         # even while PowerShell captures the worker's structured result.
         plan.write_text(json.dumps(dict(Version=1, BatchId='tty', Direction=direction, Jobs=jobs)))

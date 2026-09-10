@@ -5,6 +5,7 @@ $script:DataFolderName = 'ProperSSHManager'
 $script:ConfigVersion = 1
 
 . (Join-Path $PSScriptRoot 'SSHManager.ScpBatch.ps1')
+. (Join-Path $PSScriptRoot 'SSHManager.RemoteEditor.ps1')
 
 function Get-SSHManagerPaths {
     param([string]$ApplicationRoot)
@@ -552,53 +553,15 @@ function ConvertTo-SSHManagerPosixLiteral {
     return $apostrophe + $Value.Replace($apostrophe, $escapedApostrophe) + $apostrophe
 }
 
-function Invoke-SSHManagerRemoteDirectoryList {
+function New-SSHManagerRemoteProcessStartInfo {
     param(
         [Parameter(Mandatory = $true)]$HostEntry,
         [Parameter(Mandatory = $true)]$Paths,
-        [string]$RemotePath = '~/',
-        [ValidateRange(3, 120)][int]$TimeoutSeconds = 20
+        [Parameter(Mandatory = $true)][string]$RemoteCommand,
+        [ValidateRange(3,120)][int]$TimeoutSeconds = 30
     )
-
     $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
-    if ($null -eq $sshCommand) {
-        throw 'ssh.exe tidak ditemukan. Install Windows OpenSSH Client terlebih dahulu.'
-    }
-
-    $requestedPath = $RemotePath.Trim()
-    if ([string]::IsNullOrWhiteSpace($requestedPath)) { $requestedPath = '~/' }
-    if ($requestedPath.Contains("`r") -or $requestedPath.Contains("`n")) {
-        throw 'Path remote tidak boleh mengandung baris baru.'
-    }
-
-    $pathLiteral = ConvertTo-SSHManagerPosixLiteral -Value $requestedPath
-    $remoteScript = @'
-path=__PSM_PATH_LITERAL__
-case "$path" in
-  "~") path="$HOME" ;;
-  "~/"*) path="$HOME/${path#??}" ;;
-esac
-if ! cd -- "$path" 2>/dev/null; then
-  printf 'Folder remote tidak dapat dibuka: %s\n' "$path" >&2
-  exit 21
-fi
-printf '__PSM_PATH__\t%s\n' "$PWD"
-for item in ./* ./.[!.]* ./..?*; do
-  if [ ! -e "$item" ] && [ ! -L "$item" ]; then
-    continue
-  fi
-  name=${item#./}
-  if [ -d "$item" ]; then
-    kind=D
-  else
-    kind=F
-  fi
-  printf '__PSM_ITEM__\t%s\t%s\n' "$kind" "$name"
-done
-'@
-    $remoteScript = $remoteScript.Replace('__PSM_PATH_LITERAL__', $pathLiteral)
-    $remoteCommand = 'sh -c ' + (ConvertTo-SSHManagerPosixLiteral -Value $remoteScript)
-
+    if ($null -eq $sshCommand) { throw 'ssh.exe tidak ditemukan. Install Windows OpenSSH Client terlebih dahulu.' }
     $sshArgs = New-Object 'Collections.Generic.List[string]'
     $sshArgs.Add('-T')
     $sshArgs.Add('-p')
@@ -684,6 +647,58 @@ done
         $startInfo.EnvironmentVariables['SSH_ASKPASS_REQUIRE'] = 'force'
         $startInfo.EnvironmentVariables['DISPLAY'] = 'proper-ssh-manager:0'
     }
+
+    return $startInfo
+}
+
+function Invoke-SSHManagerRemoteDirectoryList {
+    param(
+        [Parameter(Mandatory = $true)]$HostEntry,
+        [Parameter(Mandatory = $true)]$Paths,
+        [string]$RemotePath = '~/',
+        [ValidateRange(3, 120)][int]$TimeoutSeconds = 20
+    )
+
+    $sshCommand = Get-Command ssh.exe -ErrorAction SilentlyContinue
+    if ($null -eq $sshCommand) {
+        throw 'ssh.exe tidak ditemukan. Install Windows OpenSSH Client terlebih dahulu.'
+    }
+
+    $requestedPath = $RemotePath.Trim()
+    if ([string]::IsNullOrWhiteSpace($requestedPath)) { $requestedPath = '~/' }
+    if ($requestedPath.Contains("`r") -or $requestedPath.Contains("`n")) {
+        throw 'Path remote tidak boleh mengandung baris baru.'
+    }
+
+    $pathLiteral = ConvertTo-SSHManagerPosixLiteral -Value $requestedPath
+    $remoteScript = @'
+path=__PSM_PATH_LITERAL__
+case "$path" in
+  "~") path="$HOME" ;;
+  "~/"*) path="$HOME/${path#??}" ;;
+esac
+if ! cd -- "$path" 2>/dev/null; then
+  printf 'Folder remote tidak dapat dibuka: %s\n' "$path" >&2
+  exit 21
+fi
+printf '__PSM_PATH__\t%s\n' "$PWD"
+for item in ./* ./.[!.]* ./..?*; do
+  if [ ! -e "$item" ] && [ ! -L "$item" ]; then
+    continue
+  fi
+  name=${item#./}
+  if [ -d "$item" ]; then
+    kind=D
+  else
+    kind=F
+  fi
+  printf '__PSM_ITEM__\t%s\t%s\n' "$kind" "$name"
+done
+'@
+    $remoteScript = $remoteScript.Replace('__PSM_PATH_LITERAL__', $pathLiteral)
+    $remoteCommand = 'sh -c ' + (ConvertTo-SSHManagerPosixLiteral -Value $remoteScript)
+
+    $startInfo = New-SSHManagerRemoteProcessStartInfo -HostEntry $HostEntry -Paths $Paths -RemoteCommand $remoteCommand -TimeoutSeconds $TimeoutSeconds
 
     $process = $null
     try {
@@ -1052,6 +1067,10 @@ function Import-SSHManagerConfig {
 }
 
 Export-ModuleMember -Function @(
+    'ConvertFrom-SSHManagerTextBytes',
+    'ConvertTo-SSHManagerTextBytes',
+    'Find-SSHManagerEditorText',
+    'Invoke-SSHManagerRemoteTextFile',
     'New-SSHManagerScpBatchPlan',
     'New-SSHManagerScpBatchStatus',
     'Write-SSHManagerScpBatchStatus',

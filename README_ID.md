@@ -6,6 +6,7 @@ Proper SSH Manager adalah aplikasi desktop WPF berbasis PowerShell untuk mengelo
 
 ## Fitur utama
 
+- Editor teks remote seperti Notepad: **Edit file** (`Ctrl+Shift+E`), simpan `Ctrl+S`, pencarian, Undo/Redo, Word Wrap, dan salinan lokal.
 - CRUD host: tambah, edit, duplikat, dan hapus IP/hostname SSH.
 - Autentikasi password otomatis, private key, atau Windows OpenSSH Agent.
 - Transfer SCP untuk upload/download satu atau banyak file/folder, termasuk browser path remote, recursive, preserve timestamp/mode, dan kompresi.
@@ -38,6 +39,7 @@ Proper SSH Manager adalah aplikasi desktop WPF berbasis PowerShell untuk mengelo
 
 ## Persyaratan
 
+- Khusus editor remote: server Linux dengan `python3`, izin baca/tulis file, dan izin membuat file di folder induknya. Aplikasi tidak membutuhkan Python di Windows.
 - Windows 10 atau Windows 11.
 - Windows PowerShell 5.1.
 - OpenSSH Client (`ssh.exe`).
@@ -130,7 +132,7 @@ Status bawah menampilkan progres `[1/3]` lalu ringkasan, misalnya **Selesai SCP 
 
 VPN diperiksa untuk node yang sedang diproses. Kegagalan VPN, autentikasi, pretest koneksi, atau SCP dicatat pada node tersebut. Jika memakai Jump Host, pretest TCP langsung dilewati dan koneksi dilakukan lewat SSH jump host. Opsi **Tes koneksi sebelum membuka** tetap mengikuti pengaturan aplikasi. Menutup tab batch sebelum selesai akan membuat manager menandai node yang belum selesai sebagai terhenti; file yang sudah berhasil tersalin tetap ada.
 
-Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.7.5**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
+Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.8.0**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
 
 Secara default, manager diminimalkan selama SCP berjalan. Setelah seluruh node berhasil, proses PowerShell SCP berakhir, tab SCP ditutup otomatis, dan jendela manager yang sama dipulihkan ke depan. Status bawah diperbarui menjadi hasil akhir seperti **Selesai SCP Download: 8 file dari host el.d.mme.** atau **Selesai SCP Upload: 1 folder ke host el.d.mme.** Jika ada node gagal, hasil tetap ditampilkan sampai Anda menekan Enter untuk kembali ke manager dan status bawah menampilkan pesan gagal. Perilaku kembali otomatis ini dapat diubah melalui **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
 
@@ -139,6 +141,24 @@ SCP otomatis memakai port, username, jump host, kebijakan host key, metode auten
 Urutan baris yang tampil menentukan posisi host pada layout. Host favorit tampil lebih dahulu, lalu diurutkan menurut group dan nama.
 
 Private key harus berformat OpenSSH. File PuTTY `.ppk` perlu dikonversi terlebih dahulu ke format OpenSSH.
+
+## Edit file teks remote
+
+1. Pilih node melalui checkbox **Pilih**, lalu klik **Edit file** atau tekan `Ctrl+Shift+E`.
+2. Klik **Pilih file...** untuk menelusuri server, atau masukkan path file lalu klik **Buka**.
+3. Edit teks seperti di Notepad, kemudian tekan `Ctrl+S` untuk menyimpan langsung ke server.
+4. Gunakan **Cari** / `Ctrl+F` dan **Berikutnya** / `F3` untuk mencari teks. Copy/paste, Undo/Redo, dan Word Wrap tersedia.
+5. Jika beberapa node dipilih, gunakan dropdown **Node** untuk berpindah. Setiap simpan berlaku pada satu file yang sedang dibuka di node tersebut.
+
+Status menghubungkan, membaca, menyimpan, dan error langsung terlihat. Tanda `*` berarti perubahan belum disimpan. Saat menutup, memuat ulang, atau berpindah file/node, pilih **Simpan**, **Buang perubahan**, atau **Batal**. Jika baca/simpan gagal, isi editor tetap tersedia. **Simpan salinan lokal...** membuat salinan tanpa menandai file remote sudah tersimpan.
+
+Mendukung file teks biasa yang sudah ada, maksimal **2 MiB**, dengan encoding UTF-8 (dengan/tanpa BOM) atau UTF-16 LE/BE dengan BOM. File biner dan encoding lain ditolak. Encoding, format baris, dan keberadaan newline terakhir dipertahankan; format baris dapat dipilih menjadi LF, CRLF, atau CR. Format baris campuran dipertahankan persis jika teks tidak berubah; setelah diedit, seluruh baris memakai format yang dipilih dan pemberitahuan tampil di editor.
+
+Opsi **Buat backup sebelum simpan** aktif secara default. Backup `.proper-backup-<waktu>-<acak>` dibuat di folder remote yang sama dan path lengkapnya tampil setelah simpan. Backup tidak dihapus otomatis. Simpan memakai file sementara dan penggantian atomik, mempertahankan owner/group, mode, serta extended attributes; proses berhenti jika metadata itu tidak bisa dipertahankan. Symlink tetap menunjuk target yang sama; file dengan hard link tidak dapat disimpan melalui editor ini. User SSH perlu izin menulis file dan folder induknya; editor tidak menjalankan sudo.
+
+Sebelum simpan, versi dibandingkan dengan file di server. Jika berbeda, perubahan Anda tetap tersedia untuk disalin ke lokal atau dimuat ulang. Simpan bersamaan dari editor ini diurutkan dalam folder yang sama. Program lain perlu mengikuti advisory lock yang sama untuk koordinasi penuh; hindari mengedit file yang sama secara bersamaan dari aplikasi lain. Jika simpan timeout atau koneksi terputus, muat ulang untuk memastikan apakah server sudah menerima perubahan sebelum mencoba lagi.
+
+Server membutuhkan Linux dan `python3` dengan standard library; tidak perlu paket pip. Helper dikirim melalui SSH setiap operasi dan tidak diinstal pada server. Autentikasi, port, jump host, host-key policy, serta override VPN mengikuti node seperti browser remote. Python tidak diperlukan di Windows untuk menjalankan editor.
 
 ## Konfigurasi VPN
 
@@ -177,6 +197,7 @@ Jangan menulis password langsung di field perintah khusus karena command line da
 | `Ctrl+F` | Fokus pencarian |
 | `Ctrl+N` | Tambah host |
 | `Ctrl+E` | Edit host |
+| `Ctrl+Shift+E` | Buka editor file remote |
 | `Ctrl+D` | Duplikat host |
 | `Ctrl+Shift+S` | Upload atau download melalui SCP |
 | `Delete` | Hapus host |

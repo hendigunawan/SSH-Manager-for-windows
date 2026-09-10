@@ -1,10 +1,17 @@
-# Validasi v1.7.0
+# Validasi v1.8.0
 
-Tanggal: 8 September 2026. Lingkungan pengujian: Linux, PowerShell 7.4.19, Python 3.
+Tanggal: 10 September 2026. Lingkungan pengujian: Linux, PowerShell 7.4.19, Python 3.
 
 Lulus:
 
-- Parser PowerShell untuk seluruh script, XML main window, 8 dialog inline, dan 2 style ComboBox.
+- Runtime SCP v1.7.5 dari paket yang diberikan dipertahankan identik; uji manifest download lama mengirim libFIX5.a dan libmisc.a sebagai dua argumen native terpisah.
+- Normalisasi kompatibilitas path lokal Windows drive/UNC, nama dengan spasi, dan array remote eksplisit.
+- Encoding editor: UTF-8 dengan/tanpa BOM, UTF-16 LE/BE dengan BOM, LF/CRLF/CR, baris campuran, newline terakhir, file kosong, serta penolakan biner/encoding salah/file melebihi 2 MiB.
+- Controller editor asli dengan kontrol/transport pengganti: state perubahan, target file yang sudah dibuka, simpan node lama sebelum berpindah, pembatalan pindah/tutup, serta pemulihan setelah baca/simpan gagal. Ini bukan uji tampilan WPF.
+- Helper remote pada file sementara nyata: baca/simpan, backup, mode dan extended attributes, konflik versi, symlink, penolakan hard link/FIFO, serta dua penyimpanan bersamaan.
+- Transport editor melalui proses ssh.exe simulasi: path Unicode/tanda petik, payload stdin UTF-8, file kosong, 2 MiB, port/key/jump host/host-key policy, status progres, browser listing, Python tidak ditemukan, protokol salah, timeout, dan handle output yang ditahan proses turunan.
+
+- Parser PowerShell untuk seluruh script, XML main window, editor, dialog perubahan belum disimpan, 8 dialog inline, dan 2 style ComboBox.
 - Smoke test portabel untuk struktur paket, konfigurasi default, dan pemeriksaan integrasi statis.
 - Tes perilaku: pemetaan node unik, urutan transfer, path remote per node, sumber lokal bersama, recursive, override VPN, serta serialisasi JSON dengan satu/banyak path.
 - Folder download terpisah, termasuk nama node sama, karakter terlarang, dan nama device Windows seperti CON.log.
@@ -24,6 +31,9 @@ Di Windows, jalankan dari folder aplikasi:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\Smoke-Test.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\ScpBatch-Test.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\ScpPathCompatibility-Test.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\RemoteEditor-Test.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Tests\RemoteEditorUiState-Test.ps1
 ```
 
 Pemeriksaan penggunaan di Windows:
@@ -34,3 +44,23 @@ Pemeriksaan penggunaan di Windows:
 4. Download file bernama sama dari ketiga node; pastikan hasil berada pada subfolder node masing-masing.
 5. Coba node uji yang tidak dapat dijangkau; antrean harus tetap meneruskan node berikutnya dan menampilkan hasil gagal untuk node tersebut.
 6. Setelah semuanya berhasil, tab SCP harus menutup dan manager yang sama dipulihkan. Jika ada gagal, tab menunggu Enter dan rincian tetap dapat dibaca.
+
+
+Tes pengembangan Linux/WSL:
+
+```bash
+python3 Tests/RemoteTextFile-Test.py
+python3 Tests/RemoteEditorTransport-Test.py --pwsh /path/to/pwsh
+python3 Tests/ScpRuntime-Test.py --pwsh /path/to/pwsh
+```
+
+Pemeriksaan editor di Windows dengan node uji Linux:
+
+1. Buka **Edit file**, pilih file `.cfg` kecil, dan pastikan isi serta node/path terlihat benar.
+2. Ubah teks, coba Undo/Redo, pencarian, Word Wrap, lalu `Ctrl+S`. Periksa isi server, format LF, mode file, dan backup yang disebutkan di status.
+3. Ubah teks lagi dan coba tutup/pindah node. **Batal** harus mempertahankan teks, **Simpan** menyimpan ke node lama terlebih dahulu, dan **Buang perubahan** membuang hanya setelah perpindahan berhasil.
+4. Ubah file dari sesi lain sebelum simpan. Editor harus menolak konflik dan mempertahankan teks untuk disalin lokal atau dimuat ulang.
+5. Coba file tanpa izin tulis dan node tidak dapat dijangkau. Status harus menunjukkan kegagalan; editor tetap memegang perubahan.
+6. Jalankan kembali SCP banyak node sesuai langkah sebelumnya untuk memastikan update yang dipakai adalah v1.8.0.
+
+Penguncian helper bersifat advisory pada folder yang sama. Penulis eksternal yang tidak memakai lock tersebut tetap memiliki celah perubahan antara pemeriksaan terakhir dan penggantian atomik; pengujian tidak mengklaim sinkronisasi universal dengan aplikasi lain.

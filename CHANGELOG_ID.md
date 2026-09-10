@@ -2,6 +2,16 @@
 
 **Language:** [English](CHANGELOG.md) | **Bahasa Indonesia**
 
+## 1.8.0 — 2026-09-10
+
+- Menggunakan pembaruan v1.7.5 yang diberikan; runtime SCP batch, normalisasi path lama, dan tampilan progres native ikut dipertahankan.
+- Menambahkan editor file remote seperti Notepad melalui **Edit file**, menu Host, atau `Ctrl+Shift+E`.
+- Mendukung browser remote, simpan (`Ctrl+S`), pencarian teks, Undo/Redo, Word Wrap, salinan lokal, dan pilihan node.
+- Mempertahankan encoding UTF-8/UTF-16 serta format baris, menolak file biner/terlalu besar, dan meminta pilihan sebelum membuang perubahan.
+- Simpan menyediakan backup opsional (aktif secara default), mempertahankan metadata, dan mengganti file secara atomik. Pemeriksaan versi serta advisory lock folder mengoordinasikan simpan bersamaan dari editor.
+- Status baca/simpan langsung terlihat, konflik/timeout dilaporkan, dan browser memiliki mode khusus satu file. Membutuhkan Python 3 di server Linux.
+- Menambahkan tes encoding, state controller, filesystem remote, transport SSH, serta regresi pemisahan path batch v1.7.5. Batas pengujian Windows dijelaskan pada Tests/VALIDATION.md.
+
 ## 1.7.5 — 2026-09-09
 
 - Memperbaiki SCP batch multi-node Download agar banyak path remote selalu dipisahkan menjadi argumen SCP tersendiri, bukan terbaca sebagai satu path panjang.

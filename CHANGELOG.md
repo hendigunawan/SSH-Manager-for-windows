@@ -2,6 +2,16 @@
 
 **Language:** **English** | [Bahasa Indonesia](CHANGELOG_ID.md)
 
+## 1.8.0 — 2026-09-10
+
+- Based on the supplied v1.7.5 update; its SCP batch runtime, legacy path normalization and native progress display are included.
+- Added a Notepad-style remote file editor through **Edit file**, the Host menu, or `Ctrl+Shift+E`.
+- Supports remote browsing, save (`Ctrl+S`), literal Find, Undo/Redo, Word Wrap, local copies and node selection.
+- Keeps UTF-8/UTF-16 encoding and line endings, rejects binary/oversized files, and prompts before discarding unsaved changes.
+- Saves create an optional backup (enabled by default), preserve metadata and use atomic replacement. Version checks and an advisory directory lock coordinate concurrent editor saves.
+- Added live read/save status, conflict/timeout handling, and a file-only remote-picker mode. Requires Python 3 on the Linux server.
+- Added codec, controller-state, remote filesystem and SSH pipe tests, plus regression checks for v1.7.5 batch path handling. See Tests/VALIDATION.md for tested scope and Windows limitations.
+
 ## 1.7.5 — 2026-09-09
 
 - Fixed multi-node SCP batch downloads so multiple remote paths are always passed as separate SCP arguments instead of being interpreted as one long path.

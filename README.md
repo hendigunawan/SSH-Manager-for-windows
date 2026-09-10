@@ -6,6 +6,7 @@ Proper SSH Manager is a PowerShell-based WPF desktop application for managing SS
 
 ## Key features
 
+- Notepad-style remote text editor: **Edit file** (`Ctrl+Shift+E`), save with `Ctrl+S`, Find, Undo/Redo, Word Wrap, and local copies.
 - Host CRUD: add, edit, duplicate, and delete SSH IP addresses/hostnames.
 - Automatic password authentication, private key authentication, or Windows OpenSSH Agent.
 - SCP upload/download for one or multiple files/folders, including a remote-path browser, recursive transfers, timestamp/mode preservation, and compression.
@@ -38,6 +39,7 @@ Proper SSH Manager is a PowerShell-based WPF desktop application for managing SS
 
 ## Requirements
 
+- Remote editor only: Linux server with `python3` and permission to read/write the file and create files in its parent directory. Python is not required on Windows for the application.
 - Windows 10 or Windows 11.
 - Windows PowerShell 5.1.
 - OpenSSH Client (`ssh.exe`).
@@ -147,7 +149,7 @@ The bottom status area shows progress such as `[1/3]`, followed by a summary suc
 
 VPN is checked for the node currently being processed. VPN, authentication, connection-pretest, or SCP failures are recorded for that node. When a Jump Host is configured, the direct TCP pretest is skipped and the connection is made through the SSH jump host. **Tes koneksi sebelum membuka** (`Test connection before opening`) continues to follow the application setting. Closing the batch tab before completion causes the manager to mark unfinished nodes as interrupted; files already copied successfully remain in place.
 
-The transfer banner displays the runtime version, for example **Proper SSH Manager 1.7.5**. After an update, verify that the expected version is shown so that the transfer does not use an older installed script.
+The transfer banner displays the runtime version, for example **Proper SSH Manager 1.8.0**. After an update, verify that the expected version is shown so that the transfer does not use an older installed script.
 
 By default, the manager is minimized while SCP is running. After all nodes succeed, the SCP PowerShell process exits, the SCP tab closes automatically, and the same manager window is restored to the foreground. The bottom status is updated with the final result, for example **Selesai SCP Download: 8 file dari host el.d.mme.** or **Selesai SCP Upload: 1 folder ke host el.d.mme.** If any node fails, the result remains visible until Enter is pressed to return to the manager, and the bottom status displays the failure. This automatic-return behavior can be changed through **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
 
@@ -156,6 +158,24 @@ SCP automatically uses the same port, username, jump host, host-key policy, auth
 The visible row order determines host position in the layout. Favorite hosts are shown first, followed by sorting by group and name.
 
 Private keys must use OpenSSH format. PuTTY `.ppk` files must be converted to OpenSSH format first.
+
+## Edit remote text files
+
+1. Select a node using **Pilih**, then click **Edit file** or press `Ctrl+Shift+E`.
+2. Use **Pilih file...** to browse the node, or enter a file path and click **Buka**.
+3. Edit the text and press `Ctrl+S`. No terminal editor is opened.
+4. **Cari** / `Ctrl+F` searches literal text; **Berikutnya** / `F3` finds the next occurrence. Copy/paste, Undo/Redo and Word Wrap are available.
+5. If several nodes were selected, use the **Node** dropdown to switch. Each editor save applies to the currently opened file on one node.
+
+The editor shows connecting, reading, saving and error status immediately. Unsaved changes are marked with `*`; closing, reloading or switching nodes/files offers **Simpan** (Save), **Buang perubahan** (Discard), or **Batal** (Cancel). A failed read or save keeps the current text available. **Simpan salinan lokal...** exports a copy without marking the remote document as saved.
+
+Supported files: existing regular text files up to **2 MiB**, encoded as UTF-8 (with or without BOM) or UTF-16 LE/BE with BOM. Binary files and unsupported encodings are refused. The original encoding, line ending and final newline are retained; the line-ending selector can explicitly choose LF, CRLF or CR. Mixed line endings are retained byte for byte when text is unchanged; after an edit they use the selected line ending, with a notice in the editor.
+
+**Buat backup sebelum simpan** is enabled by default. A backup named `.proper-backup-<timestamp>-<random>` is placed in the same remote directory and its full path appears after saving. Backups are not deleted automatically. Saving uses a temporary file and atomic replacement, preserves owner/group, mode and extended attributes, and stops if they cannot be preserved. Symlinks keep pointing to their resolved target; hard-linked files cannot be saved in this editor. Your SSH user needs permission to modify both the file and its directory; the editor does not elevate with sudo.
+
+Before saving, the version is compared with the file on the server. A conflict keeps your edits and lets you export a local copy or reload. Concurrent saves by this editor are serialized within the containing directory. External programs must cooperate with the same advisory lock for full concurrency protection; avoid editing the same file simultaneously elsewhere. After a save timeout or lost connection, reload to check whether the server accepted the save before retrying.
+
+The remote server needs Linux and `python3` (standard library only, no pip packages). The helper is sent over SSH for each operation and is not installed on the server. The same node authentication, port, jump host, host-key policy and VPN override are used as the remote browser. Python is not required on Windows to use the editor.
 
 ## VPN configuration
 
@@ -194,6 +214,7 @@ Do not put passwords directly in custom-command fields because command lines may
 | `Ctrl+F` | Focus search |
 | `Ctrl+N` | Add host |
 | `Ctrl+E` | Edit host |
+| `Ctrl+Shift+E` | Open remote file editor |
 | `Ctrl+D` | Duplicate host |
 | `Ctrl+Shift+S` | Upload or download via SCP |
 | `Delete` | Delete host |

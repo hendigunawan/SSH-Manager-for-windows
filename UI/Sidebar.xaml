@@ -1,0 +1,15 @@
+<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="#0C1929" BorderBrush="#203247" BorderThickness="0,0,1,0" Width="200">
+ <DockPanel>
+  <StackPanel DockPanel.Dock="Top" Margin="20,20,12,18"><TextBlock Text="WORKSPACE" FontSize="10" FontWeight="SemiBold" Foreground="#6882A1"/><TextBlock Text="Proper SSH Manager" FontWeight="SemiBold" FontSize="13" Margin="0,5,0,0"/></StackPanel>
+  <Border DockPanel.Dock="Bottom" Margin="12,12,12,20" Background="#122438" CornerRadius="6" Padding="12"><StackPanel><TextBlock Text="SSH  ·  SCP  ·  RDP  ·  VPN" FontWeight="SemiBold" FontSize="11"/><TextBlock Text="Konfigurasi tersimpan lokal" Foreground="#8198B6" FontSize="10" Margin="0,5,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+  <StackPanel>
+   <Button x:Name="NavConnections" Tag="Connections" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8D4;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="Connections"/></StackPanel></Button>
+   <Button x:Name="NavLayout" Tag="Layout" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8A9;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="Terminal Layout"/></StackPanel></Button>
+   <Button x:Name="NavScp" Tag="Scp" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="SCP Transfer"/></StackPanel></Button>
+   <Button x:Name="NavEditor" Tag="Editor" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE70F;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="Remote Editor"/></StackPanel></Button>
+   <Button x:Name="NavRdp" Tag="Rdp" Style="{DynamicResource NavButton}" ToolTip="Kelola dan buka Remote Desktop (mstsc)"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="RDP Manager"/></StackPanel></Button>
+   <Button x:Name="NavVpn" Tag="Vpn" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE774;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="VPN &amp; Network"/></StackPanel></Button>
+   <Button x:Name="NavSettings" Tag="Settings" Style="{DynamicResource NavButton}"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" Width="28"/><TextBlock Text="Settings"/></StackPanel></Button>
+  </StackPanel>
+ </DockPanel>
+</Border>

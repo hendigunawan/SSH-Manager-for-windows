@@ -6,6 +6,9 @@ $script:ConfigVersion = 1
 
 . (Join-Path $PSScriptRoot 'SSHManager.ScpBatch.ps1')
 . (Join-Path $PSScriptRoot 'SSHManager.RemoteEditor.ps1')
+. (Join-Path $PSScriptRoot 'SSHManager.Logging.ps1')
+. (Join-Path $PSScriptRoot 'SSHManager.Rdp.ps1')
+. (Join-Path $PSScriptRoot 'SSHManager.RdpCredential.ps1')
 
 function Get-SSHManagerPaths {
     param([string]$ApplicationRoot)
@@ -80,7 +83,14 @@ function Repair-SSHManagerConfig {
         Add-MissingProperty $hostItem 'Id' ([guid]::NewGuid().ToString('N'))
         Add-MissingProperty $hostItem 'Name' ''
         Add-MissingProperty $hostItem 'Group' 'Default'
-        Add-MissingProperty $hostItem 'HostName' ''
+        if ($null -eq $hostItem.PSObject.Properties['HostName']) {
+            # Hand-written/legacy entries may use "host" or "address" for the endpoint.
+            $legacyAddress = ''
+            foreach ($alias in @('Host', 'Address')) {
+                if ($null -ne $hostItem.PSObject.Properties[$alias] -and -not [string]::IsNullOrWhiteSpace([string]$hostItem.$alias)) { $legacyAddress = [string]$hostItem.$alias; break }
+            }
+            Add-MissingProperty $hostItem 'HostName' $legacyAddress
+        }
         Add-MissingProperty $hostItem 'Port' 22
         Add-MissingProperty $hostItem 'Username' ''
         Add-MissingProperty $hostItem 'AuthType' 'Password'
@@ -94,6 +104,17 @@ function Repair-SSHManagerConfig {
         Add-MissingProperty $hostItem 'Notes' ''
         Add-MissingProperty $hostItem 'Favorite' $false
         Add-MissingProperty $hostItem 'LastConnectedAt' ''
+        # v1.10.0: SSH + RDP per host. Port/Username remain the SSH fields for runtime compatibility.
+        Add-MissingProperty $hostItem 'SshEnabled' $true
+        Add-MissingProperty $hostItem 'RdpEnabled' $false
+        Add-MissingProperty $hostItem 'RdpPort' 3389
+        Add-MissingProperty $hostItem 'RdpUsername' ''
+        Add-MissingProperty $hostItem 'RdpFullscreen' $true
+        Add-MissingProperty $hostItem 'RdpMultiMonitor' $false
+        Add-MissingProperty $hostItem 'RdpAdmin' $false
+        Add-MissingProperty $hostItem 'RdpWidth' 0
+        Add-MissingProperty $hostItem 'RdpHeight' 0
+        Add-MissingProperty $hostItem 'RdpCredentialSaved' $false
     }
 
     foreach ($vpn in @($Config.VpnProfiles)) {
@@ -306,9 +327,11 @@ function Test-SSHManagerHost {
     param(
         [Parameter(Mandatory = $true)]$HostEntry,
         [int]$TimeoutSeconds = 8,
-        [scriptblock]$ProgressAction = $null
+        [scriptblock]$ProgressAction = $null,
+        [int]$Port = 0
     )
 
+    $targetPort = if ($Port -gt 0) { $Port } else { [int]$HostEntry.Port }
     $client = New-Object Net.Sockets.TcpClient
     $watch = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -316,7 +339,7 @@ function Test-SSHManagerHost {
         if ($ProgressAction) {
             try { & $ProgressAction 0 $effectiveTimeoutSeconds } catch { }
         }
-        $task = $client.ConnectAsync([string]$HostEntry.HostName, [int]$HostEntry.Port)
+        $task = $client.ConnectAsync([string]$HostEntry.HostName, $targetPort)
         while (-not $task.IsCompleted) {
             $elapsedMilliseconds = $watch.ElapsedMilliseconds
             if ($elapsedMilliseconds -ge ($effectiveTimeoutSeconds * 1000)) {
@@ -334,7 +357,7 @@ function Test-SSHManagerHost {
         if ($ProgressAction) {
             try { & $ProgressAction $watch.ElapsedMilliseconds $effectiveTimeoutSeconds } catch { }
         }
-        [pscustomobject]@{ Success = $true; Milliseconds = $watch.ElapsedMilliseconds; Message = 'Port SSH dapat dijangkau.' }
+        [pscustomobject]@{ Success = $true; Milliseconds = $watch.ElapsedMilliseconds; Message = 'Port dapat dijangkau.' }
     }
     catch {
         $watch.Stop()
@@ -345,13 +368,59 @@ function Test-SSHManagerHost {
     }
 }
 
+# Set only inside a VPN runspace job (Start-SSHManagerVpnJob); lets Stop-SSHManagerVpnJob kill what the job started.
+$script:SSHManagerProcessTracker = $null
+
+function Start-SSHManagerTrackedProcess {
+    param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$StartInfo)
+    $tracker = $script:SSHManagerProcessTracker
+    if ($null -eq $tracker) { return [Diagnostics.Process]::Start($StartInfo) }
+    # The lock makes "job stopped" and "process registered" mutually exclusive, so no process escapes the kill.
+    [Threading.Monitor]::Enter($tracker)
+    try {
+        if ($tracker.Stopped) { throw 'Proses VPN dihentikan.' }
+        $process = [Diagnostics.Process]::Start($StartInfo)
+        if ($process) { [void]$tracker.Processes.Add($process) }
+        return $process
+    }
+    finally { [Threading.Monitor]::Exit($tracker) }
+}
+
+function Invoke-SSHManagerNativeCommand {
+    param([Parameter(Mandatory = $true)][string]$FilePath, [string[]]$ArgumentList = @())
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = Join-WindowsCommandLine -Arguments $ArgumentList
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = Start-SSHManagerTrackedProcess -StartInfo $startInfo
+    try {
+        # Both streams are read concurrently so a full stderr pipe cannot deadlock the child.
+        $output = $process.StandardOutput.ReadToEndAsync()
+        $errorOutput = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $output.Result; ErrorOutput = $errorOutput.Result }
+    }
+    finally { $process.Dispose() }
+}
+
+function Get-SSHManagerPowerShellArguments {
+    param([Parameter(Mandatory = $true)][string]$Command)
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    return @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand)
+}
+
 function Test-SSHManagerVpnConnected {
     param([Parameter(Mandatory = $true)]$Profile)
 
     if ($Profile.Type -eq 'WindowsRas') {
+        # An empty name would match any rasdial output and report a false "connected".
+        if ([string]::IsNullOrWhiteSpace([string]$Profile.ConnectionName)) { return $false }
         try {
-            $text = (& rasdial.exe 2>&1 | Out-String)
-            return $text -match [regex]::Escape([string]$Profile.ConnectionName)
+            $result = Invoke-SSHManagerNativeCommand -FilePath 'rasdial.exe'
+            return ($result.Output + $result.ErrorOutput) -match [regex]::Escape([string]$Profile.ConnectionName)
         }
         catch { return $false }
     }
@@ -361,8 +430,8 @@ function Test-SSHManagerVpnConnected {
     }
 
     try {
-        $result = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ([string]$Profile.CheckCommand) 2>$null
-        return ($LASTEXITCODE -eq 0 -and (($result | Out-String).Trim() -notmatch '^(false|0)$'))
+        $result = Invoke-SSHManagerNativeCommand -FilePath 'powershell.exe' -ArgumentList (Get-SSHManagerPowerShellArguments -Command ([string]$Profile.CheckCommand))
+        return ($result.ExitCode -eq 0 -and ([string]$result.Output).Trim() -notmatch '^(false|0)$')
     }
     catch { return $false }
 }
@@ -396,12 +465,14 @@ function Connect-SSHManagerVpn {
                 $arguments += $password
             }
             try {
-                $output = (& rasdial.exe @arguments 2>&1 | Out-String)
+                $rasdial = Invoke-SSHManagerNativeCommand -FilePath 'rasdial.exe' -ArgumentList $arguments
             }
             finally {
                 $password = $null
+                $arguments = $null
             }
-            if ($LASTEXITCODE -ne 0 -and $output -notmatch 'already connected') {
+            $output = [string]$rasdial.Output + [string]$rasdial.ErrorOutput
+            if ($rasdial.ExitCode -ne 0 -and $output -notmatch 'already connected') {
                 throw $output.Trim()
             }
         }
@@ -409,19 +480,20 @@ function Connect-SSHManagerVpn {
             if ([string]::IsNullOrWhiteSpace([string]$Profile.ConnectCommand)) {
                 throw 'Perintah connect VPN belum diisi.'
             }
-            $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$Profile.ConnectCommand))
             $startInfo = New-Object Diagnostics.ProcessStartInfo
             $startInfo.FileName = 'powershell.exe'
-            $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+            $startInfo.Arguments = Join-WindowsCommandLine -Arguments (Get-SSHManagerPowerShellArguments -Command ([string]$Profile.ConnectCommand))
             $startInfo.UseShellExecute = [bool]$Profile.RunAsAdministrator
             if ($Profile.RunAsAdministrator) {
+                # An elevated process cannot be killed from this non-elevated app, so it is not tracked.
                 $startInfo.Verb = 'runas'
+                $process = [Diagnostics.Process]::Start($startInfo)
             }
             else {
                 $startInfo.CreateNoWindow = $true
                 $startInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+                $process = Start-SSHManagerTrackedProcess -StartInfo $startInfo
             }
-            $process = [Diagnostics.Process]::Start($startInfo)
             if ($process -and -not $Profile.RunAsAdministrator) {
                 $process.WaitForExit([Math]::Max(1, [int]$Profile.WaitSeconds) * 1000) | Out-Null
             }
@@ -456,12 +528,12 @@ function Disconnect-SSHManagerVpn {
 
     try {
         if ($Profile.Type -eq 'WindowsRas') {
-            $output = (& rasdial.exe ([string]$Profile.ConnectionName) /disconnect 2>&1 | Out-String)
-            if ($LASTEXITCODE -ne 0) { throw $output.Trim() }
+            $rasdial = Invoke-SSHManagerNativeCommand -FilePath 'rasdial.exe' -ArgumentList @([string]$Profile.ConnectionName, '/disconnect')
+            if ($rasdial.ExitCode -ne 0) { throw ([string]$rasdial.Output + [string]$rasdial.ErrorOutput).Trim() }
         }
         elseif (-not [string]::IsNullOrWhiteSpace([string]$Profile.DisconnectCommand)) {
-            & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ([string]$Profile.DisconnectCommand) | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Perintah disconnect VPN gagal.' }
+            $result = Invoke-SSHManagerNativeCommand -FilePath 'powershell.exe' -ArgumentList (Get-SSHManagerPowerShellArguments -Command ([string]$Profile.DisconnectCommand))
+            if ($result.ExitCode -ne 0) { throw 'Perintah disconnect VPN gagal.' }
         }
         else {
             throw 'Perintah disconnect belum dikonfigurasi.'
@@ -1098,5 +1170,27 @@ Export-ModuleMember -Function @(
     'Start-SSHManagerLayout',
     'Start-SSHManagerScp',
     'Export-SSHManagerConfig',
-    'Import-SSHManagerConfig'
+    'Import-SSHManagerConfig',
+    'Initialize-SSHManagerLog',
+    'Get-SSHManagerLogFile',
+    'Write-SSHManagerLog',
+    'Get-SSHManagerHostValue',
+    'Test-SSHManagerSshEnabled',
+    'Test-SSHManagerRdpEnabled',
+    'Get-SSHManagerRdpPort',
+    'Get-SSHManagerRdpEndpoint',
+    'Resolve-SSHManagerVpnId',
+    'Get-SSHManagerCopyName',
+    'New-SSHManagerRdpLaunchPlan',
+    'Start-RdpConnection',
+    'Start-SSHManagerTcpProbe',
+    'Get-SSHManagerTcpProbeResult',
+    'Start-SSHManagerVpnJob',
+    'Receive-SSHManagerVpnJob',
+    'Stop-SSHManagerVpnJob',
+    'Initialize-SSHManagerCredentialStore',
+    'Get-RdpCredentialTarget',
+    'Save-RdpCredential',
+    'Get-RdpCredential',
+    'Remove-RdpCredential'
 )

@@ -4,6 +4,17 @@
 
 Proper SSH Manager is a PowerShell-based WPF desktop application for managing SSH connections and SCP transfers on Windows. It combines a host list, VPN selection, automatic password handling, connection tests, quick search, and Windows Terminal workspaces with multiple pane layouts.
 
+## Workspace UI (v1.9.1)
+
+The sidebar opens every page inside the same main window. SCP, Remote Editor, VPN & Network, and Settings no longer create separate feature windows. File pickers, profile editors and confirmation prompts remain dialogs when needed. Connections supplies an optional initial selection for SCP/editor; row actions operate only on that row.
+
+- **Terminal Layout:** choose a layout card and preview the selected hosts, then open Windows Terminal. The preview does not represent a live SSH session.
+- **SCP Transfer:** check nodes directly on this page, set upload/download paths, and use **Start transfer**. All saved hosts are available with Select all/Clear actions; a Connections selection is optional. You can drop local files/folders into the upload area. Batch results appear on the manager's SCP activity page; byte progress stays in the terminal. An initial “Waiting for result” state does not confirm that the process is still running.
+- **Remote Editor:** choose a server and file; use Save, Reload, Find, Undo/Redo, Word Wrap or Save local copy. The gutter numbers display lines, including wrapped lines. Navigation prompts before discarding unsaved changes. This is a plain-text editor without syntax highlighting.
+
+Update: close the old manager, extract the package to a new folder, and run `Install.cmd`. Stored hosts and credentials remain in the existing data directory. This release adds no UI dependencies. Native WPF visual checks are included in `Tests/Workspace-Windows-Test.ps1` and must be run on Windows.
+
+
 ## Key features
 
 - Notepad-style remote text editor: **Edit file** (`Ctrl+Shift+E`), save with `Ctrl+S`, Find, Undo/Redo, Word Wrap, and local copies.
@@ -121,8 +132,8 @@ If **Tutup hanya tab manager setelah terminal dibuka** (`Close only the manager 
 
 ## SCP transfers
 
-1. Check the **Pilih** (`Select`) column for one or more nodes. The number of SCP nodes is not limited by the SSH layout.
-2. Click **SCP**, open **Host → Transfer SCP**, or press `Ctrl+Shift+S`.
+1. Open **SCP Transfer** from the sidebar, the **SCP** button, or `Ctrl+Shift+S`.
+2. Check one or more nodes directly under **PILIH NODE**. SSH layouts do not limit this list. Connections supplies only an optional initial selection.
 3. Select **Upload** or **Download**.
 4. To upload multiple files, click **Pilih file...** (`Choose files...`) and select several files at once. The same local sources are sent to all selected nodes.
 5. To upload a folder, click **Pilih folder...** (`Choose folder...`); **Recursive** is enabled automatically.
@@ -149,7 +160,7 @@ The bottom status area shows progress such as `[1/3]`, followed by a summary suc
 
 VPN is checked for the node currently being processed. VPN, authentication, connection-pretest, or SCP failures are recorded for that node. When a Jump Host is configured, the direct TCP pretest is skipped and the connection is made through the SSH jump host. **Tes koneksi sebelum membuka** (`Test connection before opening`) continues to follow the application setting. Closing the batch tab before completion causes the manager to mark unfinished nodes as interrupted; files already copied successfully remain in place.
 
-The transfer banner displays the runtime version, for example **Proper SSH Manager 1.8.0**. After an update, verify that the expected version is shown so that the transfer does not use an older installed script.
+The transfer banner displays the runtime version, for example **Proper SSH Manager 1.9.1**. After an update, verify that the expected version is shown so that the transfer does not use an older installed script.
 
 By default, the manager is minimized while SCP is running. After all nodes succeed, the SCP PowerShell process exits, the SCP tab closes automatically, and the same manager window is restored to the foreground. The bottom status is updated with the final result, for example **Selesai SCP Download: 8 file dari host el.d.mme.** or **Selesai SCP Upload: 1 folder ke host el.d.mme.** If any node fails, the result remains visible until Enter is pressed to return to the manager, and the bottom status displays the failure. This automatic-return behavior can be changed through **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
 
@@ -161,11 +172,11 @@ Private keys must use OpenSSH format. PuTTY `.ppk` files must be converted to Op
 
 ## Edit remote text files
 
-1. Select a node using **Pilih**, then click **Edit file** or press `Ctrl+Shift+E`.
+1. Open **Remote Editor** from the sidebar and choose a server in **Node**. **Edit file** and `Ctrl+Shift+E` open the same page.
 2. Use **Pilih file...** to browse the node, or enter a file path and click **Buka**.
 3. Edit the text and press `Ctrl+S`. No terminal editor is opened.
 4. **Cari** / `Ctrl+F` searches literal text; **Berikutnya** / `F3` finds the next occurrence. Copy/paste, Undo/Redo and Word Wrap are available.
-5. If several nodes were selected, use the **Node** dropdown to switch. Each editor save applies to the currently opened file on one node.
+5. The **Node** dropdown offers all saved hosts for switching. Each editor save applies to the currently opened file on one node.
 
 The editor shows connecting, reading, saving and error status immediately. Unsaved changes are marked with `*`; closing, reloading or switching nodes/files offers **Simpan** (Save), **Buang perubahan** (Discard), or **Batal** (Cancel). A failed read or save keeps the current text available. **Simpan salinan lokal...** exports a copy without marking the remote document as saved.
 
@@ -176,6 +187,17 @@ Supported files: existing regular text files up to **2 MiB**, encoded as UTF-8 (
 Before saving, the version is compared with the file on the server. A conflict keeps your edits and lets you export a local copy or reload. Concurrent saves by this editor are serialized within the containing directory. External programs must cooperate with the same advisory lock for full concurrency protection; avoid editing the same file simultaneously elsewhere. After a save timeout or lost connection, reload to check whether the server accepted the save before retrying.
 
 The remote server needs Linux and `python3` (standard library only, no pip packages). The helper is sent over SSH for each operation and is not installed on the server. The same node authentication, port, jump host, host-key policy and VPN override are used as the remote browser. Python is not required on Windows to use the editor.
+
+## RDP Manager
+
+Open **RDP Manager** from the sidebar (`Ctrl+Shift+R`). It lists every host with **RDP** enabled and stays in the same main window.
+
+- Enable RDP per host in **Edit host → Connection Type** (SSH, RDP, or both). Set the RDP port (default 3389), an optional username, and fullscreen, multi monitor, `/admin` or a custom resolution.
+- **Buka RDP** opens one `mstsc.exe` session per selected host. More than 5 sessions require confirmation. **Test RDP** only checks TCP `host:port` and shows the latency; it never logs in.
+- **VPN saat connect** offers: no VPN, the host's VPN profile, or a forced profile. The VPN must connect before RDP starts; if it fails, RDP is cancelled.
+- An RDP password is optional. If entered, it is saved in **Windows Credential Manager** (`TERMSRV/<host>`) and never in `config.json`. Without it, Windows asks for the password.
+
+Connections also shows SSH/RDP badges, an RDP button per row and **Buka RDP**. SSH, SCP and Remote Editor actions are not offered for RDP-only hosts.
 
 ## VPN configuration
 
@@ -215,6 +237,7 @@ Do not put passwords directly in custom-command fields because command lines may
 | `Ctrl+N` | Add host |
 | `Ctrl+E` | Edit host |
 | `Ctrl+Shift+E` | Open remote file editor |
+| `Ctrl+Shift+R` | Open RDP Manager |
 | `Ctrl+D` | Duplicate host |
 | `Ctrl+Shift+S` | Upload or download via SCP |
 | `Delete` | Delete host |

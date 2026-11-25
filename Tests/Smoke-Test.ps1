@@ -14,6 +14,14 @@ $requiredFiles = @(
     'Modules\SSHManager.Core.psm1',
     'Modules\SSHManager.ScpBatch.ps1',
     'Modules\SSHManager.RemoteEditor.ps1',
+    'Modules\SSHManager.Logging.ps1',
+    'Modules\SSHManager.Rdp.ps1',
+    'Modules\SSHManager.RdpCredential.ps1',
+    'UI\RdpManager.ps1',
+    'UI\RdpManager.xaml',
+    'Tests\Rdp-Test.ps1',
+    'Tests\HostRowMenu-Test.ps1',
+    'Tests\SshAsync-Test.ps1',
     'UI\RemoteEditor.ps1',
     'UI\RemoteEditor.xaml',
     'UI\UnsavedChanges.xaml',
@@ -24,6 +32,11 @@ $requiredFiles = @(
     'Runtime\Connect-SCP.ps1',
     'Runtime\AskPass.cs',
     'UI\MainWindow.xaml',
+    'UI\Theme.xaml',
+    'UI\Sidebar.xaml',
+    'UI\ScpTransfer.xaml',
+    'UI\Workspace.ps1',
+    'UI\WorkspaceModel.ps1',
     'Install.ps1',
     'Uninstall.ps1',
     'Start-SSHManager.cmd',
@@ -50,9 +63,12 @@ foreach ($file in $powershellFiles) {
 
 try {
     if (-not $SkipWindowsChecks) { Add-Type -AssemblyName @('PresentationFramework', 'PresentationCore', 'WindowsBase', 'System.Xaml') }
+    $script:ApplicationRoot=$applicationRoot
+    . (Join-Path $applicationRoot 'UI/Workspace.ps1')
     foreach ($xamlFile in @(Get-ChildItem -LiteralPath (Join-Path $applicationRoot 'UI') -Filter '*.xaml' -File)) {
         [xml]$xaml = Get-Content -LiteralPath $xamlFile.FullName -Raw -Encoding UTF8
         if (-not $SkipWindowsChecks) {
+            if ($xaml.DocumentElement.LocalName -ne 'ResourceDictionary') { Add-WorkspaceResourceReference $xaml }
             $reader = New-Object Xml.XmlNodeReader $xaml
             try { [void][Windows.Markup.XamlReader]::Load($reader) }
             finally { $reader.Close() }
@@ -61,12 +77,15 @@ try {
 
     $mainSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'SSHManager.ps1') -Raw -Encoding UTF8
     $inlineWindows = [regex]::Matches($mainSource, "(?s)@'\r?\n(<Window.*?</Window>)\r?\n'@")
-    if ($inlineWindows.Count -ne 8) {
-        throw "Diharapkan 8 dialog XAML inline, ditemukan $($inlineWindows.Count)."
+    if ($inlineWindows.Count -ne 5) {
+        throw "Diharapkan 5 dialog XAML inline, ditemukan $($inlineWindows.Count)."
     }
-    foreach ($match in $inlineWindows) {
+    $inlinePages = [regex]::Matches($mainSource, "(?s)@'\r?\n(<UserControl.*?</UserControl>)\r?\n'@")
+    if ($inlinePages.Count -ne 2) { throw "Diharapkan 2 halaman inline, ditemukan $($inlinePages.Count)." }
+    foreach ($match in (@($inlineWindows) + @($inlinePages))) {
         [xml]$inlineXaml = $match.Groups[1].Value
         if (-not $SkipWindowsChecks) {
+            Add-WorkspaceResourceReference $inlineXaml
             $inlineReader = New-Object Xml.XmlNodeReader $inlineXaml
             try { [void][Windows.Markup.XamlReader]::Load($inlineReader) }
             finally { $inlineReader.Close() }
@@ -134,7 +153,7 @@ try {
     $uninstallerSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Uninstall.ps1') -Raw -Encoding UTF8
     $coreSource = Get-Content -LiteralPath (Join-Path $applicationRoot 'Modules\SSHManager.Core.psm1') -Raw -Encoding UTF8
 
-    if ($version -ne '1.8.0') { throw "VERSION tidak sesuai: $version" }
+    if ($version -ne '1.10.0') { throw "VERSION tidak sesuai: $version" }
     if ($installerSource -notmatch "closeOnExit\s+=\s+'always'") { throw 'Profil Windows Terminal belum memakai closeOnExit=always.' }
     if ($installerSource -notmatch "keys\s+=\s+'ctrl\+shift\+f12'") { throw 'Shortcut Windows Terminal belum terdaftar.' }
     if ($installerSource -notmatch "Hotkey\s+=\s+'CTRL\+ALT\+S'") { throw 'Shortcut Windows global belum terdaftar.' }
@@ -157,7 +176,7 @@ try {
     if ($coreSource -notmatch "'Start-SSHManagerScp'") { throw 'Fungsi launcher SCP belum diekspor.' }
     if ($mainSource -notmatch 'function Show-ScpDialog') { throw 'Dialog SCP belum tersedia.' }
     if ($mainSource -notmatch 'function Show-RemotePathPicker') { throw 'Dialog browser remote belum tersedia.' }
-    if ($mainSource -notmatch 'x:Name="BrowseRemoteButton"') { throw 'Tombol pilih path remote belum tersedia.' }
+    if ((Get-Content -LiteralPath (Join-Path $applicationRoot 'UI/ScpTransfer.xaml') -Raw -Encoding UTF8) -notmatch 'x:Name="BrowseRemoteButton"') { throw 'Tombol pilih path remote belum tersedia.' }
     if ($mainSource -notmatch 'x:Name="ReturnAfterScpBox"') { throw 'Opsi kembali ke manager setelah SCP belum tersedia.' }
     if ($mainSource -notmatch '\$picker\.Multiselect\s*=\s*\$true') { throw 'Pemilih upload belum mendukung banyak file.' }
     if ($mainSource -notmatch 'SelectionMode\]::Extended') { throw 'Browser remote belum mendukung multi-select.' }
@@ -180,8 +199,8 @@ try {
     if ($mainSource -notmatch 'function Update-ConnectionProgressWindow') { throw 'Pembaruan status koneksi belum tersedia.' }
     if ($mainSource -notmatch 'function Show-ConnectionFailureDialog') { throw 'Dialog koneksi gagal khusus belum tersedia.' }
     if ($mainSource -notmatch 'IsIndeterminate="True"') { throw 'Indikator progres koneksi belum tersedia.' }
-    if ($mainSource -notmatch '-ProgressAction \$progressAction') { throw 'Tes host belum mengirim progres ke UI.' }
-    if ($mainSource -notmatch '-ProgressAction \$vpnProgressAction') { throw 'Koneksi VPN belum mengirim progres ke UI.' }
+    if ($mainSource -notmatch 'Invoke-SSHManagerPortChecks -HostEntries \$hostsToTest -Protocol Ssh -ProgressWindow \$connectionProgress') { throw 'Tes host belum mengirim progres ke UI.' }
+    if ($mainSource -notmatch 'Invoke-SSHManagerVpnConnectAsync -Profile \$profile -ProgressWindow \$connectionProgress') { throw 'Koneksi VPN belum mengirim progres ke UI.' }
     if ($mainSource -notmatch 'Content="Coba lagi"') { throw 'Tindakan coba lagi belum tersedia.' }
     if ($mainSource -notmatch 'Content="Tetap buka SSH"') { throw 'Tindakan tetap buka SSH belum tersedia.' }
     if ($mainSource -notmatch '(?s)Close-ConnectionProgressWindow -Window \$connectionProgress.*?Show-ConnectionFailureDialog') { throw 'Dialog progres belum ditutup sebelum notifikasi kegagalan.' }

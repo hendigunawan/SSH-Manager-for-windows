@@ -2,6 +2,39 @@
 
 **Language:** **English** | [Bahasa Indonesia](CHANGELOG_ID.md)
 
+## 1.10.0 — 2026-10-23
+
+- Fixed the crash when using the **...** row menu on Connections (`Exception calling "ShowDialog"… The property 'SelectedItem' cannot be found on this object`). The menu built `GetNewClosure()` handlers in which `$script:HostGrid` was `$null`, and it called functions that did not exist or ignored the row. Every action now resolves the host by ID and targets the clicked row.
+- Fixed Connections and SCP checkboxes so they update selection, details and transfer controls under real WPF. Templated cells report the grid as `Source`; the clicked CheckBox is now taken from `OriginalSource`.
+- Added **RDP Manager** to the same main window (sidebar, `Ctrl+Shift+R`): search, group filter, single/multi/select-all selection, status column, **Test RDP**, **Buka RDP**, and a per-row Connect/Edit/... menu. More than 5 sessions require confirmation.
+- Hosts can be SSH-only, RDP-only or SSH + RDP. New fields: `SshEnabled`, `RdpEnabled`, `RdpPort` (3389), `RdpUsername` and display options. Old configurations, including `{name, host, port}`, load as SSH-only without manual changes.
+- RDP sessions open with `mstsc.exe /v:HOST:PORT` (fullscreen, multi monitor, `/admin`, custom resolution). Passwords are stored only in Windows Credential Manager (`TERMSRV/<host>`), never in JSON. Without a stored credential, Windows asks for the password.
+- RDP connect follows the VPN selection (no VPN / host profile / forced profile). If the VPN fails, RDP is cancelled. VPN connect and the TCP port test run off the UI thread.
+- Connections shows SSH/RDP badges, an RDP button per row and **Buka RDP**. SSH, SCP and Remote Editor actions are hidden or skipped for RDP-only hosts. Duplicate names copies `Name - Copy`, `Name - Copy 2`, … and never copies credentials. The Host menu's Edit/Duplicate/Delete items work again.
+- SSH connect, Tes koneksi, the SCP pre-test, VPN for SCP/Editor, and VPN connect/disconnect no longer freeze the window. VPN waits are time-limited. VPN runs in a background runspace, ports are checked in parallel, and the progress window really shows elapsed time.
+- When a VPN command hangs past its time limit, every process it started (including descendants) is now stopped instead of being left running in the background. Connect commands run as Administrator cannot be stopped this way.
+- Technical errors go to `logs\ProperSSHManager.log`; users see a short dialog. An unexpected UI error is logged and no longer closes the application.
+- Added new tests: RDP module, native row menu/host editor, and an end-to-end UI Automation test of the real application.
+
+## 1.9.1 — 2026-10-05
+
+- SCP, Remote Editor, VPN & Network, and Settings now use pages in the main window with a single sidebar; removed duplicate feature windows.
+- SCP lists every configured host with direct checkboxes, Select all/Clear, and selected-node counts. Connections selection is optional; remote paths survive node selection changes.
+- The editor offers all hosts and guards navigation and application close when edits are unsaved. Editor keyboard shortcuts remain local to the editor.
+- Settings save in place. The header host-mutation menu is disabled while a feature page is active; sidebar navigation remains available.
+- Transfer/editor modules and runtime remain byte-identical to v1.9.0, including the v1.7.5 batch fix.
+- Added controller tests for direct SCP selection and one-window routing; updated the Windows test for real dispatcher/WPF controls. Native Windows validation is not available in this Linux environment.
+
+## 1.9.0 — 2026-10-04
+
+- Introduced a dark navy workspace with a blue accent and shared sidebar for Connections, Terminal Layout, SCP Transfer, Remote Editor, VPN & Network, and Settings.
+- Reworked Connections with group badges, per-row SSH/edit actions, a collapsible details panel and an empty state. Row actions target that row without changing checked-host selection.
+- Added six layout cards and a preview that follows actual selected hosts, one-host duplication, partial-tab normalization and overflow tabs. SSH sessions continue to open in Windows Terminal.
+- Reworked SCP into a selected-node list and transfer form, with upload drag-and-drop, source-file listing, per-node remote paths and real batch activity results. Native SCP keeps its byte progress; the manager does not estimate percentages.
+- Restyled the remote editor with a file header, visible-line gutter, save/reload/local-copy actions and shared navigation. Existing save, backup, conflict and unsaved-change protections remain active.
+- Preserved the v1.7.5 SCP batch/runtime fix byte-for-byte and added workspace model, navigation, control-contract and Windows-native smoke tests.
+- Linux regression suites passed. Native WPF/Windows Terminal rendering and end-to-end Windows behavior still require Windows validation; see Tests/VALIDATION.md.
+
 ## 1.8.0 — 2026-09-10
 
 - Based on the supplied v1.7.5 update; its SCP batch runtime, legacy path normalization and native progress display are included.

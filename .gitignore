@@ -167,3 +167,10 @@ ehthumbs.db
 !Tests/*.ps1
 !Tests/*.dat
 !Tests/*.cfg
+# ------------------------------------------------------------
+# AI agent files (local only)
+# ------------------------------------------------------------
+.ai/
+AGENTS.md
+CLAUDE.md
+docs/ui-redesign/

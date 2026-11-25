@@ -2,6 +2,39 @@
 
 **Language:** [English](CHANGELOG.md) | **Bahasa Indonesia**
 
+## 1.10.0 — 2026-10-23
+
+- Memperbaiki crash saat memakai menu **...** pada Connections (`Exception calling "ShowDialog"… The property 'SelectedItem' cannot be found on this object`). Menu membuat handler dengan `GetNewClosure()` sehingga `$script:HostGrid` bernilai `$null`, serta memanggil fungsi yang tidak ada atau mengabaikan baris yang diklik. Kini setiap aksi mencari host berdasarkan ID dan menargetkan baris yang diklik.
+- Memperbaiki checkbox Connections dan SCP agar memperbarui pilihan, detail, dan kontrol transfer pada WPF asli. Sel bertemplate melaporkan grid sebagai `Source`; CheckBox yang diklik kini diambil dari `OriginalSource`.
+- Menambahkan **RDP Manager** di jendela utama yang sama (sidebar, `Ctrl+Shift+R`): pencarian, filter group, pilih satu/banyak/semua, kolom status, **Test RDP**, **Buka RDP**, serta menu Connect/Edit/... per baris. Membuka lebih dari 5 sesi meminta konfirmasi.
+- Host dapat berupa SSH saja, RDP saja, atau SSH + RDP. Field baru: `SshEnabled`, `RdpEnabled`, `RdpPort` (3389), `RdpUsername`, dan opsi tampilan. Konfigurasi lama, termasuk `{name, host, port}`, terbaca sebagai SSH saja tanpa perubahan manual.
+- Sesi RDP dibuka dengan `mstsc.exe /v:HOST:PORT` (fullscreen, multi monitor, `/admin`, resolusi kustom). Password hanya disimpan di Windows Credential Manager (`TERMSRV/<host>`), tidak pernah di JSON. Tanpa credential tersimpan, Windows akan meminta password.
+- Koneksi RDP mengikuti pilihan VPN (tanpa VPN / profil host / profil paksa). Jika VPN gagal, RDP dibatalkan. Koneksi VPN dan tes port TCP berjalan di luar UI thread.
+- Connections menampilkan badge SSH/RDP, tombol RDP per baris, dan **Buka RDP**. Aksi SSH, SCP, dan Remote Editor disembunyikan atau dilewati untuk host RDP saja. Nama hasil duplikat menjadi `Nama - Copy`, `Nama - Copy 2`, …, tanpa menyalin credential. Menu Host Edit/Duplikat/Hapus berfungsi kembali.
+- Buka SSH, Tes koneksi, tes awal SCP, VPN untuk SCP/Editor, serta connect/disconnect VPN tidak lagi membekukan jendela. Penantian VPN dibatasi waktu. VPN berjalan di runspace terpisah, port diuji paralel, dan jendela progres benar-benar menampilkan waktu berjalan.
+- Jika perintah VPN macet dan melewati batas waktu, seluruh proses yang dijalankannya (termasuk proses turunannya) kini dihentikan dan tidak tertinggal di latar belakang. Perintah connect yang dijalankan sebagai Administrator tidak dapat dihentikan dengan cara ini.
+- Error teknis dicatat di `logs\ProperSSHManager.log`; pengguna melihat dialog singkat. Error UI tak terduga dicatat dan tidak lagi menutup aplikasi.
+- Menambahkan tes baru: modul RDP, menu baris/editor host native, serta tes end-to-end UI Automation pada aplikasi asli.
+
+## 1.9.1 — 2026-10-05
+
+- SCP, Remote Editor, VPN & Network, dan Settings kini menjadi halaman di jendela utama, dengan satu sidebar. Dialog fitur besar dan sidebar ganda dihapus.
+- Daftar SCP menampilkan semua host dengan checkbox langsung, Pilih semua/Kosongkan, serta jumlah node terpilih. Tidak perlu memilih Connections terlebih dahulu; path remote disimpan per node saat centang berubah.
+- Editor menawarkan seluruh host. Konfirmasi perubahan belum disimpan berlaku saat pindah halaman maupun menutup aplikasi. Shortcut editor tetap bekerja di area editor.
+- Tombol Simpan pada Settings menyimpan tanpa meninggalkan halaman. Menu perubahan host di header dinonaktifkan selama halaman fitur aktif; navigasi tetap melalui sidebar.
+- Runtime dan modul transfer/editor dipertahankan identik dari v1.9.0, termasuk perbaikan batch v1.7.5.
+- Ditambahkan tes controller SCP dan navigasi satu jendela; tes Windows diperbarui untuk dispatcher dan kontrol WPF asli. Pengujian native Windows belum dijalankan dalam lingkungan Linux ini.
+
+## 1.9.0 — 2026-10-04
+
+- Tampilan workspace navy dengan aksen biru dan sidebar bersama: Connections, Terminal Layout, SCP Transfer, Remote Editor, VPN & Network, dan Settings.
+- Connections memakai badge group, tombol SSH/edit per baris, detail yang bisa dibuka/tutup, serta pesan saat tabel kosong. Aksi baris tidak mengubah checkbox host lain.
+- Enam kartu layout beserta pratinjau mengikuti pilihan host, duplikasi satu host, susunan tab yang belum penuh, dan jumlah tab tambahan. Sesi SSH tetap berjalan di Windows Terminal.
+- SCP ditata menjadi daftar node dan formulir transfer, mendukung drag-and-drop upload, daftar file sumber, path remote per node, serta aktivitas batch dari hasil runtime. Persentase byte tetap berasal dari SCP di terminal.
+- Editor remote memakai tab nama file, nomor baris tampilan, tombol simpan/muat ulang/salinan lokal, serta sidebar yang menghormati perubahan belum disimpan.
+- Perbaikan runtime SCP batch v1.7.5 dipertahankan identik. Ditambahkan tes model layout, navigasi, nama kontrol, serta smoke test WPF khusus Windows.
+- Tes regresi Linux lulus. Render WPF/Windows Terminal dan penggunaan lengkap di Windows masih memerlukan pemeriksaan di Windows; lihat Tests/VALIDATION.md.
+
 ## 1.8.0 — 2026-09-10
 
 - Menggunakan pembaruan v1.7.5 yang diberikan; runtime SCP batch, normalisasi path lama, dan tampilan progres native ikut dipertahankan.

@@ -12,15 +12,21 @@ Add-Type -AssemblyName @('PresentationFramework', 'PresentationCore', 'WindowsBa
 Add-Type -AssemblyName System.Windows.Forms
 
 $script:ApplicationRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:AppVersion = (Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'VERSION') -Raw -ErrorAction SilentlyContinue)
+if ([string]::IsNullOrWhiteSpace($script:AppVersion)) { $script:AppVersion = '1.10.0' } else { $script:AppVersion = $script:AppVersion.Trim() }
 Import-Module (Join-Path $script:ApplicationRoot 'Modules\SSHManager.Core.psm1') -Force
 $script:Paths = Get-SSHManagerPaths -ApplicationRoot $script:ApplicationRoot
 Initialize-SSHManagerData -Paths $script:Paths
+[void](Initialize-SSHManagerLog -Paths $script:Paths)
 $script:Config = Read-SSHManagerConfig -Paths $script:Paths
 $script:IsRefreshing = $false
 $script:CheckedHostIds = New-Object 'Collections.Generic.HashSet[string]'
 $script:PendingScpStatusFiles = @{}
 $script:ScpStatusTimer = $null
+. (Join-Path $script:ApplicationRoot 'UI\WorkspaceModel.ps1')
+. (Join-Path $script:ApplicationRoot 'UI\Workspace.ps1')
 . (Join-Path $script:ApplicationRoot 'UI\RemoteEditor.ps1')
+. (Join-Path $script:ApplicationRoot 'UI\RdpManager.ps1')
 
 $createdNew = $false
 $script:SingleInstanceMutex = New-Object Threading.Mutex($true, 'Local\ProperSSHManager.MainWindow', [ref]$createdNew)
@@ -153,9 +159,11 @@ function Read-XamlWindow {
     param([Parameter(Mandatory = $true)][string]$Xaml)
 
     [xml]$xml = $Xaml
+    Add-WorkspaceResourceReference $xml
     $reader = New-Object Xml.XmlNodeReader $xml
     try {
         $window = [Windows.Markup.XamlReader]::Load($reader)
+        Apply-WorkspaceTheme -Window $window
         Apply-DarkComboBoxTheme -Window $window
         return $window
     }
@@ -187,6 +195,27 @@ function Show-ErrorMessage {
 function Confirm-Action {
     param([string]$Message, [string]$Title = 'Konfirmasi')
     return [Windows.MessageBox]::Show($script:MainWindow, $Message, $Title, [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Question) -eq [Windows.MessageBoxResult]::Yes
+}
+
+function Show-AppError {
+    param(
+        [string]$Summary = 'Terjadi kesalahan.',
+        [string]$Detail = '',
+        [string]$Component = 'App',
+        [string]$Action = '',
+        [string]$HostName = '',
+        $ErrorRecord = $null,
+        [string]$Title = 'Proper SSH Manager'
+    )
+    # Users get a short explanation; the technical exception goes only to logs\ProperSSHManager.log.
+    Write-SSHManagerLog -Level ERROR -Component $Component -Action $Action -HostName $HostName -Message ('{0} {1}' -f $Summary, $Detail).Trim() -ErrorRecord $ErrorRecord
+    $text = if ([string]::IsNullOrWhiteSpace($Detail)) { $Summary } else { "{0}`n`nDetail:`n{1}" -f $Summary, $Detail }
+    $logFile = Get-SSHManagerLogFile
+    if ($logFile) { $text += "`n`nLog teknis: $logFile" }
+    if ($null -ne $script:MainWindow -and $script:MainWindow.IsVisible) {
+        [Windows.MessageBox]::Show($script:MainWindow, $text, $Title, [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
+    }
+    else { [Windows.MessageBox]::Show($text, $Title, [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null }
 }
 
 function Set-Status {
@@ -351,6 +380,7 @@ function Update-PendingScpStatus {
                         Write-SSHManagerScpBatchStatus -Result $result -StatusFile $interruptedLog
                     }
                 }
+                if (Get-Command Update-WorkspaceTransferActivity -ErrorAction SilentlyContinue) { Update-WorkspaceTransferActivity -Result $result -StatusFile $statusFile }
                 $batchSummary = Get-SSHManagerScpBatchStatusText -Result $result
                 if ($result.IsComplete) {
                     Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
@@ -359,6 +389,7 @@ function Update-PendingScpStatus {
                 Set-Status $batchSummary.Text $batchSummary.Color $batchSummary.Details
                 continue
             }
+            if (Get-Command Update-WorkspaceTransferActivity -ErrorAction SilentlyContinue) { Update-WorkspaceTransferActivity -Result $result -StatusFile $statusFile }
             $itemSummary = Format-ScpItemSummary -FileCount ([int]$result.FileCount) -FolderCount ([int]$result.FolderCount) -ItemCount ([int]$result.ItemCount)
             $direction = [string]$result.Direction
             $hostName = [string]$result.HostName
@@ -436,6 +467,28 @@ function Refresh-VpnOverride {
     else { $script:VpnOverride.SelectedValue = '__HOST__' }
 }
 
+function Get-HostPortDisplay {
+    param($HostEntry)
+    $parts = @()
+    if (Test-SSHManagerSshEnabled $HostEntry) { $parts += [string][int]$HostEntry.Port }
+    if (Test-SSHManagerRdpEnabled $HostEntry) { $parts += [string](Get-SSHManagerRdpPort $HostEntry) }
+    if ($parts.Count -eq 0) { return '—' }
+    return $parts -join ' / '
+}
+
+function Get-HostProtocolDisplay {
+    param($HostEntry)
+    $parts = @()
+    if (Test-SSHManagerSshEnabled $HostEntry) { $parts += ('SSH  {0}@{1}:{2}' -f $HostEntry.Username, $HostEntry.HostName, $HostEntry.Port) }
+    if (Test-SSHManagerRdpEnabled $HostEntry) {
+        $rdpUserName = [string](Get-SSHManagerHostValue $HostEntry 'RdpUsername')
+        $rdpUser = if ([string]::IsNullOrWhiteSpace($rdpUserName)) { '' } else { '{0}@' -f $rdpUserName }
+        $parts += ('RDP  {0}{1}:{2}' -f $rdpUser, $HostEntry.HostName, (Get-SSHManagerRdpPort $HostEntry))
+    }
+    if ($parts.Count -eq 0) { return '—' }
+    return $parts -join "`n"
+}
+
 function Refresh-HostGrid {
     $script:IsRefreshing = $true
     try {
@@ -450,7 +503,7 @@ function Refresh-HostGrid {
         $rows = foreach ($hostEntry in $sortedHosts) {
             if ($group -and $group -ne 'Semua group' -and $hostEntry.Group -ne $group) { continue }
 
-            $haystackParts = @($hostEntry.Name, $hostEntry.Group, $hostEntry.HostName, $hostEntry.Username, $hostEntry.Tags)
+            $haystackParts = @($hostEntry.Name, $hostEntry.Group, $hostEntry.HostName, $hostEntry.Username, (Get-SSHManagerHostValue $hostEntry 'RdpUsername'), $hostEntry.Tags)
             if ([bool]$script:Config.App.SearchIncludesNotes) { $haystackParts += $hostEntry.Notes }
             $haystack = ($haystackParts -join ' ').ToLowerInvariant()
             if ($query.Length -gt 0 -and -not $haystack.Contains($query)) { continue }
@@ -462,9 +515,14 @@ function Refresh-HostGrid {
                 FavoriteMark = if ([bool]$hostEntry.Favorite) { '★' } else { '' }
                 Name       = [string]$hostEntry.Name
                 Group      = [string]$hostEntry.Group
+                GroupLabel = if ([string]::IsNullOrWhiteSpace([string]$hostEntry.Group)) { 'Default' } else { [string]$hostEntry.Group }
+                GroupBrush = Get-WorkspaceGroupBrush -Name ([string]$hostEntry.Group)
                 HostName   = [string]$hostEntry.HostName
                 Username   = [string]$hostEntry.Username
                 Port       = [int]$hostEntry.Port
+                PortDisplay = Get-HostPortDisplay $hostEntry
+                SshVisibility = if (Test-SSHManagerSshEnabled $hostEntry) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
+                RdpVisibility = if (Test-SSHManagerRdpEnabled $hostEntry) { [Windows.Visibility]::Visible } else { [Windows.Visibility]::Collapsed }
                 AuthDisplay = Get-AuthDisplay $hostEntry.AuthType
                 VpnDisplay  = Get-VpnDisplay $hostEntry.VpnProfileId
                 Source      = $hostEntry
@@ -475,6 +533,7 @@ function Refresh-HostGrid {
         Update-HostDetails
     }
     finally { $script:IsRefreshing = $false }
+    Update-WorkspaceSelection
 }
 
 function Refresh-AllViews {
@@ -488,6 +547,7 @@ function Refresh-AllViews {
     }
     finally { $script:IsRefreshing = $false }
     Refresh-HostGrid
+    Update-RdpManagerView
 }
 
 function Get-SelectedHostEntries {
@@ -510,6 +570,7 @@ function Update-HostDetails {
     if ($null -eq $hostEntry) {
         $script:DetailName.Text = 'Pilih sebuah host'
         $script:DetailEndpoint.Text = '—'
+        $script:DetailProtocols.Text = '—'
         $script:DetailGroup.Text = '—'
         $script:DetailAuth.Text = '—'
         $script:DetailVpn.Text = '—'
@@ -518,7 +579,8 @@ function Update-HostDetails {
         return
     }
     $script:DetailName.Text = [string]$hostEntry.Name
-    $script:DetailEndpoint.Text = ('{0}@{1}:{2}' -f $hostEntry.Username, $hostEntry.HostName, $hostEntry.Port)
+    $script:DetailEndpoint.Text = if (Test-SSHManagerSshEnabled $hostEntry) { '{0}@{1}:{2}' -f $hostEntry.Username, $hostEntry.HostName, $hostEntry.Port } else { '{0}:{1}' -f $hostEntry.HostName, (Get-SSHManagerRdpPort $hostEntry) }
+    $script:DetailProtocols.Text = Get-HostProtocolDisplay $hostEntry
     $script:DetailGroup.Text = if ([string]::IsNullOrWhiteSpace([string]$hostEntry.Group)) { 'Default' } else { [string]$hostEntry.Group }
     $script:DetailAuth.Text = Get-AuthDisplay $hostEntry.AuthType
     $script:DetailVpn.Text = Get-VpnDisplay $hostEntry.VpnProfileId
@@ -527,11 +589,11 @@ function Update-HostDetails {
 }
 
 function Show-HostEditor {
-    param($Existing, [switch]$AsCopy)
+    param($Existing, [switch]$AsCopy, [switch]$RdpDefault)
 
     $dialog = Read-XamlWindow @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Host SSH" Width="650" Height="760" MinHeight="650" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+ Title="Host" Width="680" Height="800" MinHeight="650" WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
  Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
  <Window.Resources>
   <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style>
@@ -543,8 +605,8 @@ function Show-HostEditor {
  </Window.Resources>
  <DockPanel Margin="18">
   <StackPanel DockPanel.Dock="Top" Margin="0,0,0,12">
-   <TextBlock x:Name="TitleText" Text="Tambah host SSH" FontSize="23" FontWeight="SemiBold"/>
-   <TextBlock Text="Password disimpan terenkripsi untuk akun Windows ini." Foreground="#94A3B8" Margin="0,4,0,0"/>
+   <TextBlock x:Name="TitleText" Text="Tambah host" FontSize="23" FontWeight="SemiBold"/>
+   <TextBlock Text="Password SSH dienkripsi DPAPI; credential RDP disimpan di Windows Credential Manager." Foreground="#94A3B8" Margin="0,4,0,0" TextWrapping="Wrap"/>
   </StackPanel>
   <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
    <Button x:Name="CancelButton" Content="Batal" IsCancel="True"/>
@@ -557,35 +619,50 @@ function Show-HostEditor {
      <StackPanel><Label Content="Nama host *"/><TextBox x:Name="NameBox"/></StackPanel>
      <StackPanel Grid.Column="2"><Label Content="Group"/><TextBox x:Name="GroupBox"/></StackPanel>
     </Grid>
-    <Grid>
-     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition Width="100"/></Grid.ColumnDefinitions>
-     <StackPanel><Label Content="IP / hostname *"/><TextBox x:Name="HostBox"/></StackPanel>
-     <StackPanel Grid.Column="2"><Label Content="Port *"/><TextBox x:Name="PortBox"/></StackPanel>
-    </Grid>
-    <Grid>
-     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
-     <StackPanel><Label Content="Username *"/><TextBox x:Name="UsernameBox"/></StackPanel>
-     <StackPanel Grid.Column="2"><Label Content="Autentikasi"/><ComboBox x:Name="AuthCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
-    </Grid>
-    <Label Content="Password"/>
-    <PasswordBox x:Name="PasswordBox"/>
-    <TextBlock x:Name="PasswordHint" Text="Untuk host baru dengan autentikasi password, field ini wajib diisi." Foreground="#94A3B8" FontSize="11" Margin="0,4,0,0"/>
-    <Grid>
-     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <StackPanel><Label Content="Path private key"/><TextBox x:Name="KeyPathBox"/></StackPanel>
-     <Button x:Name="BrowseKeyButton" Grid.Column="1" Content="Pilih..." VerticalAlignment="Bottom" Margin="8,0,0,0"/>
-    </Grid>
-    <Grid>
-     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
-     <StackPanel><Label Content="Profil VPN"/><ComboBox x:Name="VpnCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
-     <StackPanel Grid.Column="2"><Label Content="Kebijakan host key"/><ComboBox x:Name="HostKeyCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
-    </Grid>
-    <Label Content="Jump host / bastion (-J), opsional"/><TextBox x:Name="JumpHostBox" ToolTip="Contoh: mme@10.10.10.1:22"/>
-    <Grid>
-     <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
-     <StackPanel><Label Content="Keep-alive interval (detik)"/><TextBox x:Name="KeepAliveBox"/></StackPanel>
-     <StackPanel Grid.Column="2"><Label Content="Maksimum missed keep-alive"/><TextBox x:Name="KeepAliveMaxBox"/></StackPanel>
-    </Grid>
+    <Label Content="IP / hostname *"/><TextBox x:Name="HostBox"/>
+    <Label Content="Connection Type"/>
+    <StackPanel Orientation="Horizontal"><CheckBox x:Name="SshEnabledBox" Content="SSH" Foreground="#E5E7EB"/><CheckBox x:Name="RdpEnabledBox" Content="RDP" Foreground="#E5E7EB" Margin="22,0,0,0"/></StackPanel>
+    <Border x:Name="SshSection" Background="#111827" BorderBrush="#263348" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,12,0,0"><StackPanel>
+     <TextBlock Text="SSH" FontWeight="SemiBold"/>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="100"/><ColumnDefinition Width="16"/><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <StackPanel><Label Content="SSH Port *"/><TextBox x:Name="PortBox"/></StackPanel>
+      <StackPanel Grid.Column="2"><Label Content="SSH Username *"/><TextBox x:Name="UsernameBox"/></StackPanel>
+      <StackPanel Grid.Column="4"><Label Content="Autentikasi"/><ComboBox x:Name="AuthCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/></StackPanel>
+     </Grid>
+     <Label Content="Password SSH"/>
+     <PasswordBox x:Name="PasswordBox"/>
+     <TextBlock x:Name="PasswordHint" Text="Untuk host baru dengan autentikasi password, field ini wajib diisi." Foreground="#94A3B8" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <StackPanel><Label Content="Path private key"/><TextBox x:Name="KeyPathBox"/></StackPanel>
+      <Button x:Name="BrowseKeyButton" Grid.Column="1" Content="Pilih..." VerticalAlignment="Bottom" Margin="8,0,0,0"/>
+     </Grid>
+     <Label Content="Kebijakan host key"/><ComboBox x:Name="HostKeyCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/>
+     <Label Content="Jump host / bastion (-J), opsional"/><TextBox x:Name="JumpHostBox" ToolTip="Contoh: mme@10.10.10.1:22"/>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <StackPanel><Label Content="Keep-alive interval (detik)"/><TextBox x:Name="KeepAliveBox"/></StackPanel>
+      <StackPanel Grid.Column="2"><Label Content="Maksimum missed keep-alive"/><TextBox x:Name="KeepAliveMaxBox"/></StackPanel>
+     </Grid>
+    </StackPanel></Border>
+    <Border x:Name="RdpSection" Background="#111827" BorderBrush="#263348" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,12,0,0"><StackPanel>
+     <TextBlock Text="RDP (Remote Desktop)" FontWeight="SemiBold"/>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="100"/><ColumnDefinition Width="16"/><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <StackPanel><Label Content="RDP Port *"/><TextBox x:Name="RdpPortBox"/></StackPanel>
+      <StackPanel Grid.Column="2"><Label Content="RDP Username (opsional)"/><TextBox x:Name="RdpUsernameBox" ToolTip="Contoh: DOMAIN\user atau .\Administrator"/></StackPanel>
+      <StackPanel Grid.Column="4"><Label Content="Password RDP (opsional)"/><PasswordBox x:Name="RdpPasswordBox"/></StackPanel>
+     </Grid>
+     <TextBlock x:Name="RdpPasswordHint" Text="Password RDP disimpan di Windows Credential Manager (TERMSRV/host), tidak di file konfigurasi. Kosongkan agar Windows meminta password saat connect." Foreground="#94A3B8" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/>
+     <WrapPanel Margin="0,10,0,0"><CheckBox x:Name="RdpFullscreenBox" Content="Fullscreen" Foreground="#E5E7EB" Margin="0,0,18,6"/><CheckBox x:Name="RdpMultiMonitorBox" Content="Multi monitor" Foreground="#E5E7EB" Margin="0,0,18,6"/><CheckBox x:Name="RdpAdminBox" Content="Admin session (/admin)" Foreground="#E5E7EB" Margin="0,0,18,6"/></WrapPanel>
+     <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
+      <StackPanel><Label Content="Lebar resolusi (0 = default)"/><TextBox x:Name="RdpWidthBox"/></StackPanel>
+      <StackPanel Grid.Column="2"><Label Content="Tinggi resolusi (0 = default)"/><TextBox x:Name="RdpHeightBox"/></StackPanel>
+     </Grid>
+    </StackPanel></Border>
+    <Label Content="Profil VPN"/><ComboBox x:Name="VpnCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/>
     <Label Content="Tags (pisahkan dengan koma)"/><TextBox x:Name="TagsBox"/>
     <Label Content="Catatan"/><TextBox x:Name="NotesBox" AcceptsReturn="True" Height="75" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"/>
     <CheckBox x:Name="FavoriteBox" Content="Tandai sebagai favorit" Foreground="#E5E7EB" Margin="0,12,0,0"/>
@@ -596,7 +673,7 @@ function Show-HostEditor {
 '@
     $dialog.Owner = $script:MainWindow
     $controls = @{}
-    foreach ($name in @('TitleText','NameBox','GroupBox','HostBox','PortBox','UsernameBox','AuthCombo','PasswordBox','PasswordHint','KeyPathBox','BrowseKeyButton','VpnCombo','HostKeyCombo','JumpHostBox','KeepAliveBox','KeepAliveMaxBox','TagsBox','NotesBox','FavoriteBox','SaveButton')) {
+    foreach ($name in @('TitleText','NameBox','GroupBox','HostBox','SshEnabledBox','RdpEnabledBox','SshSection','RdpSection','PortBox','UsernameBox','AuthCombo','PasswordBox','PasswordHint','KeyPathBox','BrowseKeyButton','VpnCombo','HostKeyCombo','JumpHostBox','KeepAliveBox','KeepAliveMaxBox','RdpPortBox','RdpUsernameBox','RdpPasswordBox','RdpPasswordHint','RdpFullscreenBox','RdpMultiMonitorBox','RdpAdminBox','RdpWidthBox','RdpHeightBox','TagsBox','NotesBox','FavoriteBox','SaveButton')) {
         $controls[$name] = Get-NamedControl $dialog $name
     }
 
@@ -613,10 +690,12 @@ function Show-HostEditor {
     )
 
     if ($null -ne $Existing) {
-        $controls.TitleText.Text = if ($AsCopy) { 'Duplikat host SSH' } else { 'Edit host SSH' }
-        $controls.NameBox.Text = if ($AsCopy) { "$($Existing.Name) - Copy" } else { [string]$Existing.Name }
+        $controls.TitleText.Text = if ($AsCopy) { 'Duplikat host' } else { 'Edit host' }
+        $controls.NameBox.Text = if ($AsCopy) { Get-SSHManagerCopyName -Name ([string]$Existing.Name) -ExistingNames ([string[]]@($script:Config.Hosts | ForEach-Object { [string]$_.Name })) } else { [string]$Existing.Name }
         $controls.GroupBox.Text = [string]$Existing.Group
         $controls.HostBox.Text = [string]$Existing.HostName
+        $controls.SshEnabledBox.IsChecked = Test-SSHManagerSshEnabled $Existing
+        $controls.RdpEnabledBox.IsChecked = Test-SSHManagerRdpEnabled $Existing
         $controls.PortBox.Text = [string]$Existing.Port
         $controls.UsernameBox.Text = [string]$Existing.Username
         $controls.AuthCombo.SelectedValue = [string]$Existing.AuthType
@@ -626,20 +705,46 @@ function Show-HostEditor {
         $controls.JumpHostBox.Text = [string]$Existing.JumpHost
         $controls.KeepAliveBox.Text = [string]$Existing.KeepAliveInterval
         $controls.KeepAliveMaxBox.Text = [string]$Existing.KeepAliveCountMax
+        $controls.RdpPortBox.Text = [string](Get-SSHManagerRdpPort $Existing)
+        $controls.RdpUsernameBox.Text = [string](Get-SSHManagerHostValue $Existing 'RdpUsername')
+        $controls.RdpFullscreenBox.IsChecked = [bool](Get-SSHManagerHostValue $Existing 'RdpFullscreen' $true)
+        $controls.RdpMultiMonitorBox.IsChecked = [bool](Get-SSHManagerHostValue $Existing 'RdpMultiMonitor' $false)
+        $controls.RdpAdminBox.IsChecked = [bool](Get-SSHManagerHostValue $Existing 'RdpAdmin' $false)
+        $controls.RdpWidthBox.Text = [string][int](Get-SSHManagerHostValue $Existing 'RdpWidth' 0)
+        $controls.RdpHeightBox.Text = [string][int](Get-SSHManagerHostValue $Existing 'RdpHeight' 0)
         $controls.TagsBox.Text = [string]$Existing.Tags
         $controls.NotesBox.Text = [string]$Existing.Notes
         $controls.FavoriteBox.IsChecked = [bool]$Existing.Favorite
         $controls.PasswordHint.Text = if ($AsCopy) { 'Masukkan password baru; password host asal tidak disalin.' } else { 'Kosongkan jika password tersimpan tidak ingin diubah.' }
+        if ($AsCopy) { $controls.RdpPasswordHint.Text = 'Credential RDP host asal tidak disalin. Isi password bila ingin menyimpan credential baru di Windows Credential Manager.' }
+        elseif ([bool](Get-SSHManagerHostValue $Existing 'RdpCredentialSaved' $false)) { $controls.RdpPasswordHint.Text = 'Credential RDP sudah tersimpan di Windows Credential Manager. Kosongkan jika tidak ingin diubah.' }
     }
     else {
         $controls.GroupBox.Text = 'Default'
+        $controls.SshEnabledBox.IsChecked = -not $RdpDefault
+        $controls.RdpEnabledBox.IsChecked = [bool]$RdpDefault
         $controls.PortBox.Text = '22'
         $controls.AuthCombo.SelectedValue = 'Password'
         $controls.VpnCombo.SelectedValue = ''
         $controls.HostKeyCombo.SelectedValue = 'AcceptNew'
         $controls.KeepAliveBox.Text = '15'
         $controls.KeepAliveMaxBox.Text = '4'
+        $controls.RdpPortBox.Text = '3389'
+        $controls.RdpFullscreenBox.IsChecked = $true
+        $controls.RdpWidthBox.Text = '0'
+        $controls.RdpHeightBox.Text = '0'
+        if ($RdpDefault) { $controls.TitleText.Text = 'Tambah host RDP' }
     }
+
+    $updateSections = {
+        $controls.SshSection.IsEnabled = [bool]$controls.SshEnabledBox.IsChecked
+        $controls.RdpSection.IsEnabled = [bool]$controls.RdpEnabledBox.IsChecked
+        $controls.SshSection.Opacity = if ($controls.SshSection.IsEnabled) { 1.0 } else { 0.45 }
+        $controls.RdpSection.Opacity = if ($controls.RdpSection.IsEnabled) { 1.0 } else { 0.45 }
+    }
+    & $updateSections
+    $controls.SshEnabledBox.Add_Click({ & $updateSections })
+    $controls.RdpEnabledBox.Add_Click({ & $updateSections })
 
     $controls.BrowseKeyButton.Add_Click({
         $picker = New-Object Microsoft.Win32.OpenFileDialog
@@ -650,23 +755,47 @@ function Show-HostEditor {
 
     $controls.SaveButton.Add_Click({
         try {
-            $port = 0; $keepAlive = 0; $keepAliveMax = 0
+            $port = 22; $keepAlive = 15; $keepAliveMax = 4; $rdpPort = 3389; $rdpWidth = 0; $rdpHeight = 0
+            $sshEnabled = [bool]$controls.SshEnabledBox.IsChecked
+            $rdpEnabled = [bool]$controls.RdpEnabledBox.IsChecked
             if ([string]::IsNullOrWhiteSpace($controls.NameBox.Text)) { throw 'Nama host wajib diisi.' }
-            if ([string]::IsNullOrWhiteSpace($controls.HostBox.Text) -or $controls.HostBox.Text -match '\s') { throw 'IP/hostname wajib diisi dan tidak boleh mengandung spasi.' }
-            if ([string]::IsNullOrWhiteSpace($controls.UsernameBox.Text)) { throw 'Username wajib diisi.' }
-            if (-not [int]::TryParse($controls.PortBox.Text, [ref]$port) -or $port -lt 1 -or $port -gt 65535) { throw 'Port harus berupa angka 1–65535.' }
-            if (-not [int]::TryParse($controls.KeepAliveBox.Text, [ref]$keepAlive) -or $keepAlive -lt 0) { throw 'Keep-alive interval tidak valid.' }
-            if (-not [int]::TryParse($controls.KeepAliveMaxBox.Text, [ref]$keepAliveMax) -or $keepAliveMax -lt 1) { throw 'Maksimum missed keep-alive minimal 1.' }
+            if ([string]::IsNullOrWhiteSpace($controls.HostBox.Text) -or $controls.HostBox.Text.Trim() -match '\s') { throw 'IP/hostname wajib diisi dan tidak boleh mengandung spasi.' }
+            if (-not $sshEnabled -and -not $rdpEnabled) { throw 'Pilih minimal satu Connection Type: SSH atau RDP.' }
             $authType = [string]$controls.AuthCombo.SelectedValue
-            if ($authType -eq 'PrivateKey' -and [string]::IsNullOrWhiteSpace($controls.KeyPathBox.Text)) { throw 'Path private key wajib diisi.' }
-            $existingSecretAvailable = $false
-            if ($null -ne $Existing -and -not $AsCopy) {
-                $existingSecretAvailable = Test-SSHManagerSecret -Paths $script:Paths -Kind host -Id $Existing.Id
+            if ([string]::IsNullOrWhiteSpace($authType)) { $authType = 'Password' }
+            if ($sshEnabled) {
+                if ([string]::IsNullOrWhiteSpace($controls.UsernameBox.Text)) { throw 'SSH Username wajib diisi.' }
+                if (-not [int]::TryParse($controls.PortBox.Text, [ref]$port) -or $port -lt 1 -or $port -gt 65535) { throw 'SSH Port harus berupa angka 1–65535.' }
+                if (-not [int]::TryParse($controls.KeepAliveBox.Text, [ref]$keepAlive) -or $keepAlive -lt 0) { throw 'Keep-alive interval tidak valid.' }
+                if (-not [int]::TryParse($controls.KeepAliveMaxBox.Text, [ref]$keepAliveMax) -or $keepAliveMax -lt 1) { throw 'Maksimum missed keep-alive minimal 1.' }
+                if ($authType -eq 'PrivateKey' -and [string]::IsNullOrWhiteSpace($controls.KeyPathBox.Text)) { throw 'Path private key wajib diisi.' }
+                $existingSecretAvailable = $false
+                if ($null -ne $Existing -and -not $AsCopy) {
+                    $existingSecretAvailable = Test-SSHManagerSecret -Paths $script:Paths -Kind host -Id $Existing.Id
+                }
+                $passwordRequired = $authType -eq 'Password' -and -not $existingSecretAvailable
+                if ($passwordRequired -and $controls.PasswordBox.Password.Length -eq 0) { throw 'Password SSH wajib diisi karena host ini belum memiliki password tersimpan.' }
             }
-            $passwordRequired = $authType -eq 'Password' -and -not $existingSecretAvailable
-            if ($passwordRequired -and $controls.PasswordBox.Password.Length -eq 0) { throw 'Password wajib diisi karena host ini belum memiliki password tersimpan.' }
+            else {
+                # Keep previously entered SSH values when SSH is only switched off.
+                [void][int]::TryParse($controls.PortBox.Text, [ref]$port); if ($port -lt 1 -or $port -gt 65535) { $port = 22 }
+                [void][int]::TryParse($controls.KeepAliveBox.Text, [ref]$keepAlive); if ($keepAlive -lt 0) { $keepAlive = 15 }
+                [void][int]::TryParse($controls.KeepAliveMaxBox.Text, [ref]$keepAliveMax); if ($keepAliveMax -lt 1) { $keepAliveMax = 4 }
+            }
+            if ($rdpEnabled) {
+                if (-not [int]::TryParse($controls.RdpPortBox.Text, [ref]$rdpPort) -or $rdpPort -lt 1 -or $rdpPort -gt 65535) { throw 'RDP Port harus berupa angka 1–65535.' }
+                if (-not [int]::TryParse($controls.RdpWidthBox.Text, [ref]$rdpWidth) -or $rdpWidth -lt 0 -or $rdpWidth -gt 8192) { throw 'Lebar resolusi RDP harus 0–8192.' }
+                if (-not [int]::TryParse($controls.RdpHeightBox.Text, [ref]$rdpHeight) -or $rdpHeight -lt 0 -or $rdpHeight -gt 8192) { throw 'Tinggi resolusi RDP harus 0–8192.' }
+                if (($rdpWidth -eq 0) -ne ($rdpHeight -eq 0)) { throw 'Isi lebar dan tinggi resolusi RDP bersamaan, atau kosongkan keduanya (0).' }
+                if ($controls.RdpPasswordBox.Password.Length -gt 0 -and [string]::IsNullOrWhiteSpace($controls.RdpUsernameBox.Text)) { throw 'RDP Username wajib diisi bila password RDP ingin disimpan.' }
+            }
+            else {
+                [void][int]::TryParse($controls.RdpPortBox.Text, [ref]$rdpPort); if ($rdpPort -lt 1 -or $rdpPort -gt 65535) { $rdpPort = 3389 }
+                [void][int]::TryParse($controls.RdpWidthBox.Text, [ref]$rdpWidth); [void][int]::TryParse($controls.RdpHeightBox.Text, [ref]$rdpHeight)
+            }
 
-            $id = if ($null -eq $Existing -or $AsCopy) { [guid]::NewGuid().ToString('N') } else { [string]$Existing.Id }
+            $isSameHost = ($null -ne $Existing -and -not $AsCopy)
+            $id = if ($isSameHost) { [string]$Existing.Id } else { [guid]::NewGuid().ToString('N') }
             $dialog.Tag = [pscustomobject]@{
                 Host = [pscustomobject]@{
                     Id = $id; Name = $controls.NameBox.Text.Trim(); Group = $controls.GroupBox.Text.Trim()
@@ -675,10 +804,17 @@ function Show-HostEditor {
                     JumpHost = $controls.JumpHostBox.Text.Trim(); KeepAliveInterval = $keepAlive; KeepAliveCountMax = $keepAliveMax
                     HostKeyPolicy = [string]$controls.HostKeyCombo.SelectedValue; Tags = $controls.TagsBox.Text.Trim(); Notes = $controls.NotesBox.Text.Trim()
                     Favorite = [bool]$controls.FavoriteBox.IsChecked
-                    LastConnectedAt = if ($null -ne $Existing -and -not $AsCopy) { [string]$Existing.LastConnectedAt } else { '' }
+                    LastConnectedAt = if ($isSameHost) { [string]$Existing.LastConnectedAt } else { '' }
+                    SshEnabled = $sshEnabled; RdpEnabled = $rdpEnabled; RdpPort = $rdpPort; RdpUsername = $controls.RdpUsernameBox.Text.Trim()
+                    RdpFullscreen = [bool]$controls.RdpFullscreenBox.IsChecked; RdpMultiMonitor = [bool]$controls.RdpMultiMonitorBox.IsChecked; RdpAdmin = [bool]$controls.RdpAdminBox.IsChecked
+                    RdpWidth = $rdpWidth; RdpHeight = $rdpHeight
+                    # A copy never inherits the original's stored credential.
+                    RdpCredentialSaved = if ($isSameHost) { [bool](Get-SSHManagerHostValue $Existing 'RdpCredentialSaved' $false) } else { $false }
                 }
-                PasswordChanged = ($controls.PasswordBox.Password.Length -gt 0)
+                PasswordChanged = ($sshEnabled -and $controls.PasswordBox.Password.Length -gt 0)
                 Password = $controls.PasswordBox.SecurePassword
+                RdpPasswordChanged = ($rdpEnabled -and $controls.RdpPasswordBox.Password.Length -gt 0)
+                RdpPassword = $controls.RdpPasswordBox.SecurePassword
             }
             $dialog.DialogResult = $true
         }
@@ -691,59 +827,137 @@ function Show-HostEditor {
     return $null
 }
 
+function Get-HostById {
+    param([string]$Id)
+    if ([string]::IsNullOrWhiteSpace($Id)) { return $null }
+    $found = @(@($script:Config.Hosts) | Where-Object { [string]$_.Id -eq $Id } | Select-Object -First 1)
+    if ($found.Count -eq 0) { return $null }
+    return $found[0]
+}
+
+function Remove-HostRdpCredentialIfOwned {
+    param($HostEntry, [string[]]$IgnoreIds = @())
+    # Only credentials this app saved are removed, and only when no other host still uses that address.
+    if ($null -eq $HostEntry -or -not [bool](Get-SSHManagerHostValue $HostEntry 'RdpCredentialSaved' $false) -or [string]::IsNullOrWhiteSpace([string]$HostEntry.HostName)) { return }
+    $sharedBy = @(@($script:Config.Hosts) | Where-Object { [string]$_.Id -notin $IgnoreIds -and [string]$_.Id -ne [string]$HostEntry.Id -and [bool](Get-SSHManagerHostValue $_ 'RdpCredentialSaved' $false) -and [string]$_.HostName -eq [string]$HostEntry.HostName })
+    if ($sharedBy.Count -gt 0) { return }
+    try { [void](Remove-RdpCredential -HostName ([string]$HostEntry.HostName)) }
+    catch { Write-SSHManagerLog -Level WARN -Component 'RDP' -Action 'RemoveCredential' -HostName ([string]$HostEntry.HostName) -Message 'Credential RDP tidak dapat dihapus.' -ErrorRecord $_ }
+}
+
+function Save-HostEditorRdpCredential {
+    param([Parameter(Mandatory = $true)]$Result, $Previous = $null)
+    $hostEntry = $Result.Host
+    $addressChanged = $null -ne $Previous -and [string]$Previous.HostName -ne [string]$hostEntry.HostName
+    if ($null -ne $Previous -and ((-not $hostEntry.RdpEnabled) -or $addressChanged)) {
+        # RDP switched off or moved to another address: the old TERMSRV entry no longer belongs to this host.
+        Remove-HostRdpCredentialIfOwned -HostEntry $Previous
+        $hostEntry.RdpCredentialSaved = $false
+    }
+    if ($Result.RdpPasswordChanged) {
+        Save-RdpCredential -HostName ([string]$hostEntry.HostName) -Username ([string]$hostEntry.RdpUsername) -Password $Result.RdpPassword
+        $hostEntry.RdpCredentialSaved = $true
+        Write-SSHManagerLog -Component 'RDP' -Action 'SaveCredential' -HostName ([string]$hostEntry.HostName) -Message 'Credential RDP disimpan di Windows Credential Manager.'
+    }
+}
+
 function Add-Host {
-    $result = Show-HostEditor
+    param([switch]$Rdp)
+    $result = Show-HostEditor -RdpDefault:$Rdp
     if ($null -eq $result) { return }
     $script:Config.Hosts = @($script:Config.Hosts) + $result.Host
     if ($result.PasswordChanged) { Set-SSHManagerSecret -Paths $script:Paths -Kind host -Id $result.Host.Id -Secret $result.Password | Out-Null }
+    try { Save-HostEditorRdpCredential -Result $result }
+    catch { Show-AppError -Summary 'Host disimpan, tetapi credential RDP tidak dapat disimpan.' -Detail $_.Exception.Message -Component 'Host' -Action 'Add' -HostName $result.Host.HostName -ErrorRecord $_ }
     Save-CurrentConfig
     Refresh-AllViews
+    Write-SSHManagerLog -Component 'Host' -Action 'Add' -HostName $result.Host.HostName -Message ("Host '{0}' ditambahkan." -f $result.Host.Name)
     Set-Status "Host '$($result.Host.Name)' ditambahkan." '#22C55E'
 }
 
 function Edit-Host {
-    $existing = Get-PrimarySelectedHost
+    param($HostEntry=$null)
+    $existing = if ($null -ne $HostEntry) { $HostEntry } else { Get-PrimarySelectedHost }
     if ($null -eq $existing) { Show-Warning 'Pilih satu host yang akan diedit.'; return }
     $result = Show-HostEditor -Existing $existing
     if ($null -eq $result) { return }
     $script:Config.Hosts = @($script:Config.Hosts | Where-Object { $_.Id -ne $existing.Id }) + $result.Host
-    if ($result.Host.AuthType -ne 'Password') {
+    if ($result.Host.SshEnabled -and $result.Host.AuthType -ne 'Password') {
         Remove-SSHManagerSecret -Paths $script:Paths -Kind host -Id $result.Host.Id
     }
     elseif ($result.PasswordChanged) {
         Set-SSHManagerSecret -Paths $script:Paths -Kind host -Id $result.Host.Id -Secret $result.Password | Out-Null
     }
+    try { Save-HostEditorRdpCredential -Result $result -Previous $existing }
+    catch { Show-AppError -Summary 'Host disimpan, tetapi credential RDP tidak dapat disimpan.' -Detail $_.Exception.Message -Component 'Host' -Action 'Edit' -HostName $result.Host.HostName -ErrorRecord $_ }
     Save-CurrentConfig
     Refresh-AllViews
+    Write-SSHManagerLog -Component 'Host' -Action 'Edit' -HostName $result.Host.HostName -Message ("Host '{0}' diperbarui." -f $result.Host.Name)
     Set-Status "Host '$($result.Host.Name)' diperbarui." '#22C55E'
 }
 
 function Duplicate-Host {
-    $existing = Get-PrimarySelectedHost
+    param($HostEntry=$null)
+    $existing = if ($null -ne $HostEntry) { $HostEntry } else { Get-PrimarySelectedHost }
     if ($null -eq $existing) { Show-Warning 'Pilih satu host yang akan diduplikat.'; return }
     $result = Show-HostEditor -Existing $existing -AsCopy
     if ($null -eq $result) { return }
     $script:Config.Hosts = @($script:Config.Hosts) + $result.Host
     if ($result.PasswordChanged) { Set-SSHManagerSecret -Paths $script:Paths -Kind host -Id $result.Host.Id -Secret $result.Password | Out-Null }
+    try { Save-HostEditorRdpCredential -Result $result }
+    catch { Show-AppError -Summary 'Duplikat disimpan, tetapi credential RDP tidak dapat disimpan.' -Detail $_.Exception.Message -Component 'Host' -Action 'Duplicate' -HostName $result.Host.HostName -ErrorRecord $_ }
     Save-CurrentConfig
     Refresh-AllViews
+    Write-SSHManagerLog -Component 'Host' -Action 'Duplicate' -HostName $result.Host.HostName -Message ("Duplikat '{0}' dibuat dari '{1}'." -f $result.Host.Name, $existing.Name)
     Set-Status "Duplikat '$($result.Host.Name)' dibuat." '#22C55E'
 }
 
 function Delete-Hosts {
-    $selected = @(Get-SelectedHostEntries)
+    param([object[]]$HostEntries=@())
+    $selected = if (@($HostEntries).Count -gt 0) { @($HostEntries) } else { @(Get-SelectedHostEntries) }
     if ($selected.Count -eq 0) { Show-Warning 'Pilih host yang akan dihapus.'; return }
     $names = ($selected | ForEach-Object { $_.Name }) -join ', '
-    if ([bool]$script:Config.App.ConfirmBeforeDelete -and -not (Confirm-Action "Hapus $($selected.Count) host berikut?`n`n$names`n`nPassword tersimpan host tersebut juga akan dihapus." 'Hapus host')) { return }
-    $ids = @($selected.Id)
+    if ([bool]$script:Config.App.ConfirmBeforeDelete -and -not (Confirm-Action "Hapus $($selected.Count) host berikut?`n`n$names`n`nPassword SSH tersimpan dan credential RDP yang disimpan aplikasi untuk host tersebut juga akan dihapus." 'Hapus host')) { return }
+    $ids = @($selected | ForEach-Object { [string]$_.Id })
     foreach ($item in $selected) {
         Remove-SSHManagerSecret -Paths $script:Paths -Kind host -Id $item.Id
+        Remove-HostRdpCredentialIfOwned -HostEntry $item -IgnoreIds $ids
         [void]$script:CheckedHostIds.Remove([string]$item.Id)
+        [void]$script:RdpCheckedHostIds.Remove([string]$item.Id)
     }
-    $script:Config.Hosts = @($script:Config.Hosts | Where-Object { $ids -notcontains $_.Id })
+    $script:Config.Hosts = @($script:Config.Hosts | Where-Object { $ids -notcontains [string]$_.Id })
     Save-CurrentConfig
     Refresh-AllViews
+    Write-SSHManagerLog -Component 'Host' -Action 'Delete' -Message ("{0} host dihapus: {1}" -f $selected.Count, $names)
     Set-Status "$($selected.Count) host dihapus." '#F59E0B'
+}
+
+function Invoke-HostRowAction {
+    param([string]$Action, [string]$HostId, [string]$Context = 'Connections')
+    $hostEntry = Get-HostById $HostId
+    if ($null -eq $hostEntry) {
+        Write-SSHManagerLog -Level WARN -Component 'Connections' -Action $Action -Message ("Host dengan ID '{0}' tidak ditemukan." -f $HostId)
+        Show-Warning "Host tidak ditemukan.`n`nDaftar host mungkin sudah berubah; tampilan diperbarui."
+        Refresh-AllViews
+        return
+    }
+    try {
+        $vpnOverride = if ($Context -eq 'Rdp') { Get-RdpVpnOverride } else { [string]$script:VpnOverride.SelectedValue }
+        switch ($Action) {
+            'Ssh' { Connect-SelectedHosts -HostEntries @($hostEntry) }
+            'Rdp' { Start-RdpLaunchBatch -Hosts @($hostEntry) -VpnOverride $vpnOverride }
+            'TestRdp' { Test-RdpHosts -Hosts @($hostEntry) }
+            'Scp' { $script:WorkspaceState.NavigationHosts = @($hostEntry); Invoke-WorkspaceNavigation 'Scp' }
+            'Editor' { $script:WorkspaceState.NavigationHosts = @($hostEntry); Invoke-WorkspaceNavigation 'Editor' }
+            'Edit' { Edit-Host -HostEntry $hostEntry }
+            'Duplicate' { Duplicate-Host -HostEntry $hostEntry }
+            'Delete' { Delete-Hosts -HostEntries @($hostEntry) }
+            default { throw "Aksi '$Action' tidak dikenal." }
+        }
+    }
+    catch {
+        Show-AppError -Summary 'Aksi host tidak dapat dijalankan.' -Detail $_.Exception.Message -Component 'Connections' -Action $Action -HostName ([string]$hostEntry.HostName) -ErrorRecord $_
+    }
 }
 
 function Show-VpnEditor {
@@ -821,14 +1035,14 @@ function Show-VpnEditor {
 }
 
 function Show-VpnManager {
-    $window = Read-XamlWindow @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Kelola VPN" Width="760" Height="480" WindowStartupLocation="CenterOwner" Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
- <Window.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="BorderBrush" Value="#34445D"/><Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="3"/></Style><Style TargetType="ListBox"><Setter Property="Background" Value="#0F172A"/><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="BorderBrush" Value="#263348"/></Style></Window.Resources>
- <DockPanel Margin="16"><StackPanel DockPanel.Dock="Top" Margin="0,0,0,12"><TextBlock Text="Profil VPN" FontSize="23" FontWeight="SemiBold"/><TextBlock Text="Host dapat memilih profil ini atau terhubung tanpa VPN." Foreground="#94A3B8"/></StackPanel><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0"><Button x:Name="CloseButton" Content="Tutup" IsCancel="True"/></StackPanel>
+    $window = Read-WorkspaceView @'
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="#0B1220" Foreground="#E5E7EB">
+ <UserControl.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="BorderBrush" Value="#34445D"/><Setter Property="Padding" Value="12,7"/><Setter Property="Margin" Value="3"/></Style><Style TargetType="ListBox"><Setter Property="Background" Value="#0F172A"/><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="BorderBrush" Value="#263348"/></Style></UserControl.Resources>
+ <DockPanel Margin="0"><StackPanel DockPanel.Dock="Top" Margin="0,0,0,12"><TextBlock Text="Profil VPN" FontSize="23" FontWeight="SemiBold"/><TextBlock Text="Host dapat memilih profil ini atau terhubung tanpa VPN." Foreground="#94A3B8"/></StackPanel><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0"><Button x:Name="CloseButton" Content="Kembali ke Connections"/></StackPanel>
  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="170"/></Grid.ColumnDefinitions><ListBox x:Name="VpnList" DisplayMemberPath="Display"/><StackPanel Grid.Column="1" Margin="10,0,0,0"><Button x:Name="AddButton" Content="Tambah"/><Button x:Name="EditButton" Content="Edit"/><Button x:Name="DeleteButton" Content="Hapus" Background="#7F1D1D"/><Separator Margin="4,10" Background="#334155"/><Button x:Name="ConnectButton" Content="Connect sekarang" Background="#166534"/><Button x:Name="DisconnectButton" Content="Disconnect"/></StackPanel></Grid></DockPanel>
-</Window>
+</UserControl>
 '@
-    $window.Owner=$script:MainWindow
+    
     $list=Get-NamedControl $window 'VpnList'; $add=Get-NamedControl $window 'AddButton'; $edit=Get-NamedControl $window 'EditButton'; $delete=Get-NamedControl $window 'DeleteButton'; $connect=Get-NamedControl $window 'ConnectButton'; $disconnect=Get-NamedControl $window 'DisconnectButton'
     $refresh = {
         $list.ItemsSource = @($script:Config.VpnProfiles | Sort-Object Name | ForEach-Object {
@@ -869,7 +1083,7 @@ function Show-VpnManager {
     $delete.Add_Click({
         if (-not $list.SelectedItem) { return }
         $profile = $list.SelectedItem.Source
-        $answer = [Windows.MessageBox]::Show($window, "Hapus profil VPN '$($profile.Name)'? Host yang menggunakannya akan diubah menjadi Tanpa VPN.", 'Hapus VPN', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Question)
+        $answer = [Windows.MessageBox]::Show($script:MainWindow, "Hapus profil VPN '$($profile.Name)'? Host yang menggunakannya akan diubah menjadi Tanpa VPN.", 'Hapus VPN', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Question)
         if ($answer -ne [Windows.MessageBoxResult]::Yes) { return }
         foreach ($hostEntry in @($script:Config.Hosts | Where-Object { $_.VpnProfileId -eq $profile.Id })) {
             $hostEntry.VpnProfileId = ''
@@ -883,24 +1097,26 @@ function Show-VpnManager {
     $connect.Add_Click({
         if (-not $list.SelectedItem) { return }
         $profile = $list.SelectedItem.Source
-        $result = Connect-SSHManagerVpn -Profile $profile -Paths $script:Paths -TimeoutSeconds ([int]$script:Config.App.VpnConnectTimeoutSeconds)
+        $result = Invoke-SSHManagerVpnConnectAsync -Profile $profile
+        Set-Status $result.Message $(if ($result.Success) { '#22C55E' } else { '#EF4444' })
         $icon = if ($result.Success) { [Windows.MessageBoxImage]::Information } else { [Windows.MessageBoxImage]::Error }
-        [Windows.MessageBox]::Show($window, $result.Message, 'VPN', [Windows.MessageBoxButton]::OK, $icon) | Out-Null
+        [Windows.MessageBox]::Show($script:MainWindow, $result.Message, 'VPN', [Windows.MessageBoxButton]::OK, $icon) | Out-Null
     })
     $disconnect.Add_Click({
         if (-not $list.SelectedItem) { return }
-        $result = Disconnect-SSHManagerVpn -Profile $list.SelectedItem.Source
+        $result = Invoke-SSHManagerVpnDisconnectAsync -Profile $list.SelectedItem.Source
         $icon = if ($result.Success) { [Windows.MessageBoxImage]::Information } else { [Windows.MessageBoxImage]::Error }
-        [Windows.MessageBox]::Show($window, $result.Message, 'VPN', [Windows.MessageBoxButton]::OK, $icon) | Out-Null
+        [Windows.MessageBox]::Show($script:MainWindow, $result.Message, 'VPN', [Windows.MessageBoxButton]::OK, $icon) | Out-Null
     })
-    $window.ShowDialog() | Out-Null
+    (Get-NamedControl $window 'CloseButton').Add_Click({ Invoke-WorkspaceNavigation 'Connections' })
+    [void](Show-WorkspaceFeature -View $window -Page 'Vpn')
 }
 
 function Show-SettingsDialog {
-    $d=Read-XamlWindow @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Pengaturan" Width="560" Height="550" WindowStartupLocation="CenterOwner" Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
- <Window.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Label"><Setter Property="Foreground" Value="#CBD5E1"/><Setter Property="Padding" Value="0,8,0,3"/></Style><Style TargetType="TextBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#0F172A"/><Setter Property="BorderBrush" Value="#334155"/><Setter Property="Padding" Value="8,6"/></Style><Style TargetType="ComboBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#172033"/><Setter Property="BorderBrush" Value="#475569"/><Setter Property="Padding" Value="6,4"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="Padding" Value="14,8"/><Setter Property="Margin" Value="4"/></Style></Window.Resources>
- <DockPanel Margin="18"><TextBlock DockPanel.Dock="Top" Text="Pengaturan aplikasi" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,10"/><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="Batal" IsCancel="True"/><Button x:Name="SaveButton" Content="Simpan" IsDefault="True" Background="#16A34A"/></StackPanel><StackPanel>
+    $d=Read-WorkspaceView @'
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="#0B1220" Foreground="#E5E7EB">
+ <UserControl.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Label"><Setter Property="Foreground" Value="#CBD5E1"/><Setter Property="Padding" Value="0,8,0,3"/></Style><Style TargetType="TextBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#0F172A"/><Setter Property="BorderBrush" Value="#334155"/><Setter Property="Padding" Value="8,6"/></Style><Style TargetType="ComboBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#172033"/><Setter Property="BorderBrush" Value="#475569"/><Setter Property="Padding" Value="6,4"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="Padding" Value="14,8"/><Setter Property="Margin" Value="4"/></Style></UserControl.Resources>
+ <DockPanel Margin="0"><TextBlock DockPanel.Dock="Top" Text="Pengaturan aplikasi" FontSize="23" FontWeight="SemiBold" Margin="0,0,0,10"/><StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right"><Button x:Name="CancelButton" Content="Kembali"/><Button x:Name="SaveButton" Content="Simpan"  Background="#16A34A"/></StackPanel><StackPanel>
   <Label Content="Layout default"/><ComboBox x:Name="LayoutCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/>
   <Label Content="Nama profil Windows Terminal (kosong = default)"/><TextBox x:Name="TerminalProfileBox"/>
   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><Label Content="Timeout tes SSH (detik)"/><TextBox x:Name="TimeoutBox"/></StackPanel><StackPanel Grid.Column="2"><Label Content="Timeout connect VPN (detik)"/><TextBox x:Name="VpnTimeoutBox"/></StackPanel></Grid>
@@ -911,9 +1127,9 @@ function Show-SettingsDialog {
   <CheckBox x:Name="CloseAfterBox" Content="Tutup hanya tab manager setelah terminal dibuka" Foreground="#E5E7EB" Margin="0,4"/>
   <CheckBox x:Name="ReturnAfterScpBox" Content="Kembali ke manager setelah transfer SCP berhasil" Foreground="#E5E7EB" Margin="0,4"/>
  </StackPanel></DockPanel>
-</Window>
+</UserControl>
 '@
-    $d.Owner=$script:MainWindow;$lc=Get-NamedControl $d 'LayoutCombo';$tp=Get-NamedControl $d 'TerminalProfileBox';$to=Get-NamedControl $d 'TimeoutBox';$vto=Get-NamedControl $d 'VpnTimeoutBox';$mx=Get-NamedControl $d 'MaximizedBox';$pre=Get-NamedControl $d 'PreTestBox';$notes=Get-NamedControl $d 'NotesSearchBox';$del=Get-NamedControl $d 'ConfirmDeleteBox';$close=Get-NamedControl $d 'CloseAfterBox';$returnScp=Get-NamedControl $d 'ReturnAfterScpBox';$save=Get-NamedControl $d 'SaveButton'
+    $lc=Get-NamedControl $d 'LayoutCombo';$tp=Get-NamedControl $d 'TerminalProfileBox';$to=Get-NamedControl $d 'TimeoutBox';$vto=Get-NamedControl $d 'VpnTimeoutBox';$mx=Get-NamedControl $d 'MaximizedBox';$pre=Get-NamedControl $d 'PreTestBox';$notes=Get-NamedControl $d 'NotesSearchBox';$del=Get-NamedControl $d 'ConfirmDeleteBox';$close=Get-NamedControl $d 'CloseAfterBox';$returnScp=Get-NamedControl $d 'ReturnAfterScpBox';$save=Get-NamedControl $d 'SaveButton'
     $close.ToolTip='Bila aplikasi dibuka lewat profil Windows Terminal hasil installer, hanya tab Proper SSH Manager yang ditutup. Tab SSH tetap terbuka.'
     $returnScp.ToolTip='Saat SCP sukses, tab transfer ditutup dan jendela manager yang sama dipulihkan. Transfer gagal tetap menampilkan tab hasil.'
     $lc.ItemsSource=@([pscustomobject]@{Id='Single';Name='1 panel per tab'},[pscustomobject]@{Id='TwoColumns';Name='Maks. 2 — kiri | kanan'},[pscustomobject]@{Id='TwoRows';Name='Maks. 2 — atas / bawah'},[pscustomobject]@{Id='TopOneBottomTwo';Name='Maks. 3 — atas 1, bawah 2'},[pscustomobject]@{Id='TopTwoBottomOne';Name='Maks. 3 — atas 2, bawah 1'},[pscustomobject]@{Id='FourGrid';Name='Maks. 4 — grid 2 × 2'})
@@ -935,13 +1151,15 @@ function Show-SettingsDialog {
             $script:Config.App.CloseManagerAfterLaunch = [bool]$close.IsChecked
             $script:Config.App.ReturnToManagerAfterScp = [bool]$returnScp.IsChecked
             Save-CurrentConfig
-            $d.DialogResult = $true
+            Refresh-AllViews
+            Set-Status 'Pengaturan disimpan.' '#22C55E'
         }
         catch {
-            [Windows.MessageBox]::Show($d, $_.Exception.Message, 'Data belum valid', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Warning) | Out-Null
+            [Windows.MessageBox]::Show($script:MainWindow, $_.Exception.Message, 'Data belum valid', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Warning) | Out-Null
         }
     })
-    if ($d.ShowDialog()) { Refresh-AllViews; Set-Status 'Pengaturan disimpan.' '#22C55E' }
+    (Get-NamedControl $d 'CancelButton').Add_Click({ Invoke-WorkspaceNavigation 'Connections' })
+    [void](Show-WorkspaceFeature -View $d -Page 'Settings')
 }
 
 function Show-DependencyDialog {
@@ -959,46 +1177,108 @@ function Show-DependencyDialog {
 }
 
 function Test-SelectedHosts {
-    $selected = @(Get-SelectedHostEntries)
-    if ($selected.Count -eq 0) { Show-Warning 'Pilih minimal satu host.'; return }
+    $chosen = @(Get-SelectedHostEntries)
+    if ($chosen.Count -eq 0) { Show-Warning 'Pilih minimal satu host.'; return }
+    # RDP ports are tested by the RDP engine (no RDP login); SSH ports below. Neither blocks the UI thread.
+    $rdpHosts = @($chosen | Where-Object { Test-SSHManagerRdpEnabled $_ })
+    if ($rdpHosts.Count -gt 0) { Test-RdpHosts -Hosts $rdpHosts }
+    $selected = @($chosen | Where-Object { Test-SSHManagerSshEnabled $_ })
+    if ($selected.Count -eq 0) { return }
     $messages = @()
     $connectionProgress = New-ConnectionProgressWindow -Stage 'Menyiapkan tes koneksi...' -Detail ('{0} host dipilih' -f $selected.Count)
     try {
-        $hostIndex = 0
-        foreach ($hostEntry in $selected) {
-            $hostIndex++
-            $progressStage = 'Menguji {0} ({1}/{2})' -f $hostEntry.Name, $hostIndex, $selected.Count
-            $progressDetail = '{0}:{1}' -f $hostEntry.HostName, $hostEntry.Port
-            Update-ConnectionProgressWindow -Window $connectionProgress -Stage $progressStage -Detail $progressDetail
-            $progressAction = {
-                param($elapsedMilliseconds, $timeoutSeconds)
-                Update-ConnectionProgressWindow -Window $connectionProgress -Stage $progressStage -Detail $progressDetail -ElapsedMilliseconds $elapsedMilliseconds -TimeoutSeconds $timeoutSeconds
-            }.GetNewClosure()
-            $result = Test-SSHManagerHost -HostEntry $hostEntry -TimeoutSeconds ([int]$script:Config.App.ConnectTimeoutSeconds) -ProgressAction $progressAction
+        $results = @(Invoke-SSHManagerPortChecks -HostEntries $selected -Protocol Ssh -ProgressWindow $connectionProgress -Stage ('Menguji port SSH {0} host' -f $selected.Count))
+        foreach ($result in $results) {
             $mark = if ($result.Success) { '✓' } else { '✗' }
-            $messages += ('{0}  {1,-22} {2} ms  {3}' -f $mark, $hostEntry.Name, $result.Milliseconds, $result.Message)
+            $messages += ('{0}  {1,-22} {2} ms  {3}' -f $mark, $result.Host.Name, $result.Milliseconds, $result.Message)
+            Write-SSHManagerLog -Level $(if ($result.Success) { 'INFO' } else { 'WARN' }) -Component 'SSH' -Action 'Test' -HostName ('{0}:{1}' -f $result.Host.HostName, $result.Port) -Message ('{0} ({1} ms)' -f $result.Message, $result.Milliseconds)
         }
     }
     finally {
         Close-ConnectionProgressWindow -Window $connectionProgress
     }
-    Show-Info ($messages -join "`n") 'Hasil tes koneksi'
-    Set-Status 'Tes koneksi selesai.'
+    Show-Info ($messages -join "`n") 'Hasil tes koneksi SSH'
+    Set-Status 'Tes koneksi SSH selesai.'
+}
+
+function Invoke-SSHManagerVpnConnectAsync {
+    param([Parameter(Mandatory = $true)]$Profile, $ProgressWindow = $null, [string]$Detail = 'Menunggu koneksi VPN terdeteksi aktif')
+    # rasdial/custom commands run in a runspace; the UI thread only polls (see DEC-005).
+    $timeout = [Math]::Max(1, [int]$script:Config.App.VpnConnectTimeoutSeconds)
+    $stage = "Menghubungkan VPN '$($Profile.Name)'..."
+    Set-Status $stage '#38BDF8'
+    Write-SSHManagerLog -Component 'VPN' -Action 'Connect' -Message ("VPN '{0}'" -f $Profile.Name)
+    $job = Start-SSHManagerVpnJob -Profile $Profile -Paths $script:Paths -TimeoutSeconds $timeout
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    # Closures only see global/module commands, so script functions are captured by reference (DEC-006).
+    $updateProgress = ${function:Update-ConnectionProgressWindow}
+    $setStatus = ${function:Set-Status}
+    try {
+        # Connect has its own deadline; the extra margin covers runspace start-up and a hung custom command.
+        Wait-WorkspaceCondition -TimeoutSeconds ($timeout + 30) -Until { $null -ne (Receive-SSHManagerVpnJob -Job $job) }.GetNewClosure() -OnTick {
+            if ($null -ne $ProgressWindow) { & $updateProgress -Window $ProgressWindow -Stage $stage -Detail $Detail -ElapsedMilliseconds $watch.ElapsedMilliseconds -TimeoutSeconds $timeout }
+            else { & $setStatus ('{0} {1:0.0}/{2} detik' -f $stage, [Math]::Min([double]$timeout, $watch.ElapsedMilliseconds / 1000.0), $timeout) '#38BDF8' }
+        }.GetNewClosure()
+        $result = Receive-SSHManagerVpnJob -Job $job
+    }
+    catch [TimeoutException] { $result = Stop-SSHManagerVpnJob -Job $job -Message ("Perintah VPN tidak merespons dalam {0} detik." -f ($timeout + 30)) }
+    if (-not [bool]$result.Success) { Write-SSHManagerLog -Level WARN -Component 'VPN' -Action 'Connect' -Message ("VPN '{0}' gagal: {1}" -f $Profile.Name, $result.Message) }
+    return $result
+}
+
+function Invoke-SSHManagerVpnDisconnectAsync {
+    param([Parameter(Mandatory = $true)]$Profile)
+    $timeout = [Math]::Max(5, [int]$script:Config.App.VpnConnectTimeoutSeconds)
+    $stage = "Memutus VPN '$($Profile.Name)'..."
+    Set-Status $stage '#38BDF8'
+    $job = Start-SSHManagerVpnJob -Profile $Profile -Paths $script:Paths -Operation Disconnect
+    try { Wait-WorkspaceCondition -TimeoutSeconds $timeout -Until { $null -ne (Receive-SSHManagerVpnJob -Job $job) }.GetNewClosure() }
+    catch [TimeoutException] { [void](Stop-SSHManagerVpnJob -Job $job -Message ("Disconnect VPN '{0}' tidak selesai dalam {1} detik." -f $Profile.Name, $timeout)) }
+    $result = Receive-SSHManagerVpnJob -Job $job
+    Write-SSHManagerLog -Level $(if ($result.Success) { 'INFO' } else { 'WARN' }) -Component 'VPN' -Action 'Disconnect' -Message ("VPN '{0}': {1}" -f $Profile.Name, $result.Message)
+    Set-Status $result.Message $(if ($result.Success) { '#22C55E' } else { '#EF4444' })
+    return $result
+}
+
+function Invoke-SSHManagerPortChecks {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$HostEntries,
+        [ValidateSet('Ssh', 'Rdp')][string]$Protocol = 'Ssh',
+        $ProgressWindow = $null,
+        [string]$Stage = 'Menguji port...'
+    )
+    # All hosts are probed in parallel with TcpClient.ConnectAsync; the UI thread only polls.
+    $timeout = [Math]::Max(1, [int]$script:Config.App.ConnectTimeoutSeconds)
+    $checks = @(foreach ($hostEntry in $HostEntries) {
+        $port = if ($Protocol -eq 'Rdp') { Get-SSHManagerRdpPort $hostEntry } else { [int]$hostEntry.Port }
+        [pscustomobject]@{ Host = $hostEntry; Port = $port; Probe = (Start-SSHManagerTcpProbe -HostName ([string]$hostEntry.HostName) -Port $port -TimeoutSeconds $timeout) }
+    })
+    $detail = if ($checks.Count -eq 1) { '{0}:{1}' -f $checks[0].Host.HostName, $checks[0].Port } else { '{0} host diuji bersamaan' -f $checks.Count }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $updateProgress = ${function:Update-ConnectionProgressWindow}
+    $setStatus = ${function:Set-Status}
+    Wait-WorkspaceCondition -Until { @($checks | Where-Object { $null -eq (Get-SSHManagerTcpProbeResult -Probe $_.Probe) }).Count -eq 0 }.GetNewClosure() -OnTick {
+        if ($null -ne $ProgressWindow) { & $updateProgress -Window $ProgressWindow -Stage $Stage -Detail $detail -ElapsedMilliseconds $watch.ElapsedMilliseconds -TimeoutSeconds $timeout }
+        else { & $setStatus ('{0} {1}' -f $Stage, $detail) '#38BDF8' }
+    }.GetNewClosure()
+    foreach ($check in $checks) {
+        $result = Get-SSHManagerTcpProbeResult -Probe $check.Probe
+        [pscustomobject]@{
+            Host = $check.Host; Port = $check.Port; Success = [bool]$result.Success; Milliseconds = [long]$result.Milliseconds
+            Message = if ($result.Success) { 'Port dapat dijangkau.' } else { [string]$result.Message }
+        }
+    }
 }
 
 function Ensure-SSHManagerVpnForHost {
     param([Parameter(Mandatory = $true)]$HostEntry)
 
-    $override = [string]$script:VpnOverride.SelectedValue
-    $vpnId = ''
-    if ($override -eq '__HOST__') { $vpnId = [string]$HostEntry.VpnProfileId }
-    elseif ($override -ne '__NONE__') { $vpnId = $override }
+    $vpnId = Resolve-SSHManagerVpnId -HostEntry $HostEntry -Override ([string]$script:VpnOverride.SelectedValue)
     if ([string]::IsNullOrWhiteSpace($vpnId)) { return }
 
     $profile = Get-VpnById $vpnId
     if ($null -eq $profile) { throw "Profil VPN dengan ID '$vpnId' tidak ditemukan." }
-    Set-Status "Menghubungkan VPN '$($profile.Name)'..." '#38BDF8'
-    $vpnResult = Connect-SSHManagerVpn -Profile $profile -Paths $script:Paths -TimeoutSeconds ([int]$script:Config.App.VpnConnectTimeoutSeconds)
+    $vpnResult = Invoke-SSHManagerVpnConnectAsync -Profile $profile
     if (-not $vpnResult.Success) { throw "VPN '$($profile.Name)' gagal: $($vpnResult.Message)" }
 }
 
@@ -1186,47 +1466,9 @@ function Show-RemotePathPicker {
 
 function Show-ScpDialog {
     try {
-        $selected = @(Get-SelectedHostEntries)
-        if ($selected.Count -eq 0) {
-            $visibleRows = @($script:HostGrid.ItemsSource)
-            if ($visibleRows.Count -eq 1) {
-                $script:HostGrid.SelectedItem = $visibleRows[0]
-                $selected = @($visibleRows[0].Source)
-            }
-        }
-        if ($selected.Count -eq 0) { throw 'Pilih satu atau beberapa node untuk transfer SCP.' }
-        $hostEntry = $selected[0]
-
-        if (-not (Get-Command scp.exe -ErrorAction SilentlyContinue)) {
-            throw 'scp.exe tidak ditemukan. Install Windows OpenSSH Client terlebih dahulu.'
-        }
-        if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
-            throw 'wt.exe tidak ditemukan. Install atau aktifkan Windows Terminal terlebih dahulu.'
-        }
-
-        $d = Read-XamlWindow @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Transfer SCP" Width="840" Height="730" MinWidth="720" MinHeight="550" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" Background="#0B1220" Foreground="#E5E7EB" ShowInTaskbar="False">
- <Window.Resources><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E7EB"/></Style><Style TargetType="Label"><Setter Property="Foreground" Value="#CBD5E1"/><Setter Property="Padding" Value="0,8,0,3"/></Style><Style TargetType="TextBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#0F172A"/><Setter Property="BorderBrush" Value="#334155"/><Setter Property="Padding" Value="8,7"/></Style><Style TargetType="ComboBox"><Setter Property="Foreground" Value="#F8FAFC"/><Setter Property="Background" Value="#172033"/><Setter Property="BorderBrush" Value="#475569"/><Setter Property="Padding" Value="6,5"/></Style><Style TargetType="Button"><Setter Property="Foreground" Value="#E5E7EB"/><Setter Property="Background" Value="#263348"/><Setter Property="BorderBrush" Value="#34445D"/><Setter Property="Padding" Value="13,8"/><Setter Property="Margin" Value="4"/></Style></Window.Resources>
- <DockPanel Margin="20">
-  <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0"><Button Content="Batal" IsCancel="True"/><Button x:Name="StartButton" Content="Mulai transfer" IsDefault="True" Background="#16A34A" BorderBrush="#22C55E" FontWeight="SemiBold"/></StackPanel>
-  <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
-   <TextBlock Text="Transfer file dengan SCP" FontSize="23" FontWeight="SemiBold"/>
-   <TextBlock Text="Transfer berjalan pada tab baru di Windows Terminal yang sama." Foreground="#94A3B8" Margin="0,3,0,14"/>
-   <Border Background="#111827" BorderBrush="#263348" BorderThickness="1" CornerRadius="5" Padding="12" Margin="0,0,0,8"><StackPanel><TextBlock x:Name="HostNameText" FontSize="16" FontWeight="SemiBold"/><TextBlock x:Name="EndpointText" Foreground="#22C55E" Margin="0,3,0,0"/></StackPanel></Border>
-   <StackPanel x:Name="NodeControls"><Label Content="Atur path remote untuk node"/><ComboBox x:Name="NodeCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/><TextBlock Text="Pilih node untuk mengatur path masing-masing. Pilihan tersimpan saat berganti node." Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel>
-   <Label Content="Arah transfer"/><ComboBox x:Name="DirectionCombo" DisplayMemberPath="Name" SelectedValuePath="Id"/>
-   <Label x:Name="LocalLabel" Content="Sumber lokal"/>
-   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="LocalPathBox"/><Button x:Name="BrowseFileButton" Grid.Column="1" Content="Pilih file..." Margin="7,0,0,0"/><Button x:Name="BrowseFolderButton" Grid.Column="2" Content="Pilih folder..." Margin="7,0,0,0"/></Grid>
-   <Label x:Name="RemoteLabel" Content="Tujuan remote"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RemotePathBox" ToolTip="Contoh: ~/upload/ atau /var/tmp/file.txt"/><Button x:Name="BrowseRemoteButton" Grid.Column="1" Content="Pilih remote..." Margin="7,0,0,0"/></Grid>
-   <Button x:Name="ApplyRemoteAllButton" Content="Terapkan path remote ke semua node" HorizontalAlignment="Left" Margin="0,7,0,0" ToolTip="Gunakan jika path yang sama tersedia pada semua node. ~/ mengikuti home user setiap node."/>
-   <TextBlock x:Name="NodeSummaryText" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,6,0,0"/>
-   <StackPanel Margin="0,14,0,0"><CheckBox x:Name="RecursiveBox" Content="Recursive — transfer seluruh isi folder" Foreground="#E5E7EB" Margin="0,3"/><CheckBox x:Name="PreserveBox" Content="Pertahankan waktu modifikasi dan mode file (-p)" Foreground="#E5E7EB" Margin="0,3"/><CheckBox x:Name="CompressionBox" Content="Aktifkan kompresi selama transfer (-C)" Foreground="#E5E7EB" Margin="0,3"/></StackPanel>
-   <TextBlock x:Name="DirectionHint" Foreground="#94A3B8" TextWrapping="Wrap" Margin="0,14,0,0"/>
-  </StackPanel></ScrollViewer>
- </DockPanel>
-</Window>
-'@
-        $d.Owner = $script:MainWindow
+        $allHosts = @($script:Config.Hosts | Where-Object { Test-SSHManagerSshEnabled $_ } | Sort-Object Name)
+        $nodeRows = @(New-WorkspaceScpNodeRows -Hosts $allHosts -SelectedHosts @(Get-WorkspacePreferredHosts))
+        $d = Read-WorkspaceView (Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'UI\ScpTransfer.xaml') -Raw -Encoding UTF8)
         $hostNameText = Get-NamedControl $d 'HostNameText'
         $endpointText = Get-NamedControl $d 'EndpointText'
         $directionCombo = Get-NamedControl $d 'DirectionCombo'
@@ -1246,16 +1488,13 @@ function Show-ScpDialog {
         $nodeCombo = Get-NamedControl $d 'NodeCombo'
         $applyRemoteAll = Get-NamedControl $d 'ApplyRemoteAllButton'
         $nodeSummaryText = Get-NamedControl $d 'NodeSummaryText'
-        if ($selected.Count -lt 2) {
-            $nodeControls.Visibility = [Windows.Visibility]::Collapsed
-            $applyRemoteAll.Visibility = [Windows.Visibility]::Collapsed
-            $nodeSummaryText.Visibility = [Windows.Visibility]::Collapsed
-        }
-        $nodeCombo.ItemsSource = @($selected)
-        $nodeCombo.SelectedValue = [string]$hostEntry.Id
-
-        $hostNameText.Text = if ($selected.Count -gt 1) { '{0} node dipilih — diproses berurutan dalam satu tab SCP' -f $selected.Count } else { [string]$hostEntry.Name }
-        $endpointText.Text = ('{0}@{1}:{2}' -f $hostEntry.Username, $hostEntry.HostName, $hostEntry.Port)
+        $dropZone = Get-NamedControl $d 'DropZone'
+        $dropHint = Get-NamedControl $d 'DropHint'
+        $localFileList = Get-NamedControl $d 'LocalFileList'
+        $nodeList = Get-NamedControl $d 'NodeList'
+        $nodeList.ItemsSource = @($nodeRows)
+        $hostNameText.Text = 'Centang node untuk transfer'
+        $endpointText.Text = 'Pilih node di sebelah kiri.'
         $directionCombo.ItemsSource = @(
             [pscustomobject]@{ Id = 'Upload'; Name = 'Upload — komputer ke server' },
             [pscustomobject]@{ Id = 'Download'; Name = 'Download — server ke komputer' }
@@ -1263,7 +1502,10 @@ function Show-ScpDialog {
         $directionCombo.SelectedValue = 'Upload'
 
         $transferState = [pscustomobject]@{
-            ActiveHostEntry = $hostEntry
+            ActiveHostEntry = $null
+            ChangingNodes = $false
+            Busy = $false
+            LaunchedHosts = @()
             NodeStates = @{}
             Direction = ''
             LocalPaths = @()
@@ -1284,6 +1526,7 @@ function Show-ScpDialog {
             $transferState.LocalDisplay = $display
             $transferState.LocalHasDirectory = $HasDirectory
             $localPathBox.Text = $display
+            $localFileList.ItemsSource = @($cleanValues)
             $localPathBox.ToolTip = if ($cleanValues.Count -gt 0) { $cleanValues -join "`n" } else { $null }
         }
         $setRemoteSelection = {
@@ -1315,6 +1558,7 @@ function Show-ScpDialog {
         }
 
         $saveActiveRemote = {
+            if ($null -eq $transferState.ActiveHostEntry) { return }
             $remoteText = $remotePathBox.Text.Trim()
             if ($remoteText -ne $transferState.RemoteDisplay) {
                 $transferState.RemotePaths = @($remoteText)
@@ -1333,20 +1577,21 @@ function Show-ScpDialog {
                 RemoteBrowsePath = [string]$transferState.RemoteBrowsePath
             }
         }
+        $getScpSelection = { Get-WorkspaceScpSelectedHosts -Rows $nodeRows }
         $updateNodeSummary = {
             $configured = 0
             $lines = New-Object 'Collections.Generic.List[string]'
-            foreach ($node in $selected) {
+            foreach ($node in @(& $getScpSelection)) {
                 $entry = $transferState.NodeStates[[string]$node.Id]
                 $nodePaths = @($entry.RemotePaths | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
                 if ($nodePaths.Count -gt 0) { $configured++ }
                 $lines.Add(('{0}: {1}' -f $node.Name, ($nodePaths -join ', ')))
             }
-            $nodeSummaryText.Text = 'Path remote terisi: {0}/{1} node. Arahkan mouse ke sini untuk melihat daftar path.' -f $configured, $selected.Count
+            $nodeSummaryText.Text = 'Path remote terisi: {0}/{1} node. Arahkan mouse ke sini untuk melihat daftar path.' -f $configured, @(& $getScpSelection).Count
             $nodeSummaryText.ToolTip = $lines -join "`n"
         }
         $nodeCombo.Add_SelectionChanged({
-            if ($null -eq $nodeCombo.SelectedItem) { return }
+            if ($transferState.ChangingNodes -or $null -eq $nodeCombo.SelectedItem) { return }
             & $saveActiveRemote
             $transferState.ActiveHostEntry = $nodeCombo.SelectedItem
             $entry = $transferState.NodeStates[[string]$transferState.ActiveHostEntry.Id]
@@ -1356,10 +1601,11 @@ function Show-ScpDialog {
             & $updateNodeSummary
         })
         $applyRemoteAll.Add_Click({
+            if ($null -eq $transferState.ActiveHostEntry) { return }
             & $saveActiveRemote
             $activeId = [string]$transferState.ActiveHostEntry.Id
             $entry = $transferState.NodeStates[$activeId]
-            foreach ($node in $selected) {
+            foreach ($node in @(& $getScpSelection)) {
                 if ([string]$node.Id -eq $activeId) { continue }
                 $transferState.NodeStates[[string]$node.Id] = [pscustomobject]@{
                     RemotePaths=[string[]]@($entry.RemotePaths); RemoteDisplay=[string]$entry.RemoteDisplay
@@ -1378,7 +1624,7 @@ function Show-ScpDialog {
                 $transferState.Direction = $currentDirection
                 & $setLocalSelection -Values @() -HasDirectory $false
                 $defaultRemote = if ($isUpload) { '~/' } else { '' }
-                foreach ($node in $selected) {
+                foreach ($node in $allHosts) {
                     $transferState.NodeStates[[string]$node.Id] = [pscustomobject]@{
                         RemotePaths=@($defaultRemote); RemoteDisplay=$defaultRemote; RemoteHasDirectory=$false
                         RemoteFileCount=0; RemoteFolderCount=0; RemoteBrowsePath='~/'
@@ -1391,6 +1637,8 @@ function Show-ScpDialog {
             $localLabel.Content = if ($isUpload) { 'Sumber lokal' } else { 'Folder tujuan lokal' }
             $remoteLabel.Content = if ($isUpload) { 'Tujuan remote' } else { 'Sumber remote' }
             $browseFile.IsEnabled = $isUpload
+            $dropZone.AllowDrop = $isUpload
+            $dropHint.Text = if ($isUpload) { 'Tarik file atau folder ke sini untuk upload' } else { 'Pilih sumber remote dan folder tujuan download' }
             $browseFolder.Content = if ($isUpload) { 'Pilih folder...' } else { 'Folder tujuan...' }
             $hint.Text = if ($isUpload) {
                 'Upload: sumber lokal yang sama dikirim ke semua node pilihan. Atur folder tujuan per node, atau terapkan path yang sama ke semua node. Recursive aktif otomatis jika sumber berupa folder.'
@@ -1402,12 +1650,32 @@ function Show-ScpDialog {
         $directionCombo.Add_SelectionChanged($updateDirection)
         & $updateDirection
 
+        $localPathBox.Add_TextChanged({
+            if ($localPathBox.Text -ne $transferState.LocalDisplay) {
+                $localFileList.ItemsSource = if ([string]::IsNullOrWhiteSpace($localPathBox.Text)) { @() } else { @($localPathBox.Text) }
+            }
+        })
+        $dropZone.Add_PreviewDragOver({
+            param($sender,$eventArgs)
+            $eventArgs.Effects = if ($directionCombo.SelectedValue -eq 'Upload' -and $eventArgs.Data.GetDataPresent([Windows.DataFormats]::FileDrop)) { [Windows.DragDropEffects]::Copy } else { [Windows.DragDropEffects]::None }
+            $eventArgs.Handled=$true
+        })
+        $dropZone.Add_Drop({
+            param($sender,$eventArgs)
+            if ($directionCombo.SelectedValue -ne 'Upload' -or -not $eventArgs.Data.GetDataPresent([Windows.DataFormats]::FileDrop)) { return }
+            $paths=[string[]]@($eventArgs.Data.GetData([Windows.DataFormats]::FileDrop))
+            $hasFolder=@($paths | Where-Object { Test-Path -LiteralPath $_ -PathType Container }).Count -gt 0
+            & $setLocalSelection -Values $paths -HasDirectory $hasFolder
+            $recursive.IsChecked=$hasFolder
+            $eventArgs.Handled=$true
+        })
+
         $browseFile.Add_Click({
             $picker = New-Object Microsoft.Win32.OpenFileDialog
             $picker.Title = 'Pilih satu atau beberapa file untuk di-upload'
             $picker.Filter = 'Semua file|*.*'
             $picker.Multiselect = $true
-            if ($picker.ShowDialog($d)) {
+            if ($picker.ShowDialog($script:MainWindow)) {
                 & $setLocalSelection -Values ([string[]]@($picker.FileNames)) -HasDirectory $false
                 $recursive.IsChecked = $false
             }
@@ -1427,6 +1695,9 @@ function Show-ScpDialog {
             $picker.Dispose()
         })
         $browseRemote.Add_Click({
+            if ($null -eq $transferState.ActiveHostEntry -or $transferState.Busy) { return }
+            $transferState.Busy=$true
+            $d.IsEnabled=$false
             try {
                 $activeNode = $transferState.ActiveHostEntry
                 & $saveActiveRemote
@@ -1435,7 +1706,7 @@ function Show-ScpDialog {
                 }
                 Ensure-SSHManagerVpnForHost -HostEntry $activeNode
                 $isDownload = ([string]$directionCombo.SelectedValue -eq 'Download')
-                $remoteSelection = Show-RemotePathPicker -Owner $d -HostEntry $activeNode -InitialPath $transferState.RemoteBrowsePath -AllowFiles:$isDownload -AllowMultiple:$isDownload
+                $remoteSelection = Show-RemotePathPicker -Owner $script:MainWindow -HostEntry $activeNode -InitialPath $transferState.RemoteBrowsePath -AllowFiles:$isDownload -AllowMultiple:$isDownload
                 if ($remoteSelection) {
                     $remoteSelectionPaths = New-Object 'Collections.Generic.List[string]'
                     for ($remotePathIndex = 0; $remotePathIndex -lt [int]$remoteSelection.Count; $remotePathIndex++) {
@@ -1448,13 +1719,22 @@ function Show-ScpDialog {
                 }
             }
             catch {
-                [Windows.MessageBox]::Show($d, $_.Exception.Message, 'Browser remote tidak dapat dibuka', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
+                [Windows.MessageBox]::Show($script:MainWindow, $_.Exception.Message, 'Browser remote tidak dapat dibuka', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
             }
+            finally { $transferState.Busy=$false; $d.IsEnabled=$true }
         })
 
         $start.Add_Click({
+            if ($transferState.Busy) { return }
+            $transferState.Busy=$true
+            $d.IsEnabled=$false
             $managerMinimizedForTransfer = $false
             try {
+                $selected = @(& $getScpSelection)
+                if ($selected.Count -eq 0) { throw 'Centang minimal satu node pada halaman SCP.' }
+                $hostEntry=$selected[0]
+                if (-not (Get-Command scp.exe -ErrorAction SilentlyContinue)) { throw 'scp.exe tidak ditemukan. Install Windows OpenSSH Client terlebih dahulu.' }
+                if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) { throw 'wt.exe tidak ditemukan. Install atau aktifkan Windows Terminal terlebih dahulu.' }
                 $direction = [string]$directionCombo.SelectedValue
                 $localText = $localPathBox.Text.Trim()
                 $remoteText = $remotePathBox.Text.Trim()
@@ -1475,7 +1755,8 @@ function Show-ScpDialog {
                     }
                     $statusFile = Start-SSHManagerScpBatch -Plan $plan -Paths $script:Paths -TerminalProfile ([string]$script:Config.App.TerminalProfile) -StartMaximized ([bool]$script:Config.App.StartMaximized) -ReturnToManager $returnToManagerAfterScp -ManagerProcessId $PID -ManagerWindowHandle $windowHelper.Handle.ToInt64()
                     $d.Tag = $statusFile
-                    $d.DialogResult = $true
+                    $transferState.LaunchedHosts=@($selected)
+                Complete-WorkspaceFeature -Accepted $true -Destination 'ScpActivity'
                     return
                 }
 
@@ -1487,9 +1768,9 @@ function Show-ScpDialog {
 
                 if ([bool]$script:Config.App.TestConnectionBeforeOpen) {
                     Set-Status "Menguji $($hostEntry.Name)..."
-                    $testResult = Test-SSHManagerHost -HostEntry $hostEntry -TimeoutSeconds ([int]$script:Config.App.ConnectTimeoutSeconds)
+                    $testResult = @(Invoke-SSHManagerPortChecks -HostEntries @($hostEntry) -Protocol Ssh -Stage ("Menguji {0}..." -f $hostEntry.Name))[0]
                     if (-not $testResult.Success) {
-                        $continue = [Windows.MessageBox]::Show($d, "Port SSH belum dapat dijangkau: $($testResult.Message)`n`nTetap mulai transfer?", 'Koneksi belum siap', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Warning)
+                        $continue = [Windows.MessageBox]::Show($script:MainWindow, "Port SSH belum dapat dijangkau: $($testResult.Message)`n`nTetap mulai transfer?", 'Koneksi belum siap', [Windows.MessageBoxButton]::YesNo, [Windows.MessageBoxImage]::Warning)
                         if ($continue -ne [Windows.MessageBoxResult]::Yes) { return }
                     }
                 }
@@ -1520,19 +1801,69 @@ function Show-ScpDialog {
                 $hostEntry.LastConnectedAt = (Get-Date).ToString('o')
                 Save-CurrentConfig
                 $d.Tag = $statusFile
-                $d.DialogResult = $true
+                $transferState.LaunchedHosts=@($selected)
+                Complete-WorkspaceFeature -Accepted $true -Destination 'ScpActivity'
             }
             catch {
                 if ($managerMinimizedForTransfer) {
                     $script:MainWindow.WindowState = [Windows.WindowState]::Normal
                     [void]$script:MainWindow.Activate()
                 }
-                [Windows.MessageBox]::Show($d, $_.Exception.Message, 'Transfer belum dapat dimulai', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
+                [Windows.MessageBox]::Show($script:MainWindow, $_.Exception.Message, 'Transfer belum dapat dimulai', [Windows.MessageBoxButton]::OK, [Windows.MessageBoxImage]::Error) | Out-Null
                 Set-Status $_.Exception.Message '#EF4444'
             }
+            finally { $transferState.Busy=$false; $d.IsEnabled=$true }
         })
 
-        if ($d.ShowDialog()) {
+        $refreshScpSelection = {
+            & $saveActiveRemote
+            $chosen=@(& $getScpSelection)
+            $activeId=if ($transferState.ActiveHostEntry) { [string]$transferState.ActiveHostEntry.Id } else { '' }
+            $transferState.ChangingNodes=$true
+            try {
+                $nodeCombo.ItemsSource=@($chosen)
+                $matching=@($chosen | Where-Object { $_.Id -eq $activeId })
+                $active=if ($matching.Count -gt 0) { $matching[0] } elseif ($chosen.Count -gt 0) { $chosen[0] } else { $null }
+                $transferState.ActiveHostEntry=$active
+                if ($null -ne $active) {
+                    $nodeCombo.SelectedValue=[string]$active.Id
+                    $entry=$transferState.NodeStates[[string]$active.Id]
+                    & $setRemoteSelection -Values ([string[]]@($entry.RemotePaths)) -HasDirectory ([bool]$entry.RemoteHasDirectory) -BrowsePath ([string]$entry.RemoteBrowsePath) -FileCount ([int]$entry.RemoteFileCount) -FolderCount ([int]$entry.RemoteFolderCount)
+                    $endpointText.Text='{0}@{1}:{2}' -f $active.Username,$active.HostName,$active.Port
+                }
+                else {
+                    & $setRemoteSelection -Values @() -HasDirectory $false -BrowsePath '~/'
+                    $endpointText.Text='Centang node pada daftar di sebelah kiri.'
+                }
+            }
+            finally { $transferState.ChangingNodes=$false }
+            $nodeControls.IsEnabled=$chosen.Count -gt 0
+            $remotePathBox.IsEnabled=$chosen.Count -gt 0
+            $browseRemote.IsEnabled=$chosen.Count -gt 0
+            $applyRemoteAll.IsEnabled=$chosen.Count -gt 1
+            $hostNameText.Text='{0} dari {1} node dipilih' -f $chosen.Count,$allHosts.Count
+            $start.Content='Mulai transfer · {0} node' -f $chosen.Count
+            $start.IsEnabled=$chosen.Count -gt 0
+            & $updateNodeSummary
+        }
+        $nodeList.AddHandler([Windows.Controls.Primitives.ButtonBase]::ClickEvent,[Windows.RoutedEventHandler]{
+            param($sender,$eventArgs)
+            $checkbox=Get-WorkspaceEventElement -RoutedArgs $eventArgs -Type ([Windows.Controls.CheckBox]) -Tag 'ScpNodeSelection'
+            if ($null -eq $checkbox -or $null -eq $checkbox.DataContext) { return }
+            $checkbox.DataContext.IsChecked=[bool]$checkbox.IsChecked
+            & $refreshScpSelection
+            $eventArgs.Handled=$true
+        })
+        (Get-NamedControl $d 'SelectAllNodesButton').Add_Click({ foreach ($row in $nodeRows) { $row.IsChecked=$true };$nodeList.Items.Refresh();& $refreshScpSelection })
+        (Get-NamedControl $d 'ClearNodesButton').Add_Click({ foreach ($row in $nodeRows) { $row.IsChecked=$false };$nodeList.Items.Refresh();& $refreshScpSelection })
+        (Get-NamedControl $d 'CancelButton').Add_Click({ Invoke-WorkspaceNavigation 'Connections' })
+        (Get-NamedControl $d 'ActivityButton').Add_Click({ Invoke-WorkspaceNavigation 'ScpActivity' })
+        & $refreshScpSelection
+
+        if (Show-WorkspaceFeature -View $d -Page 'Scp' -CanLeave { return -not $transferState.Busy }) {
+            $selected=@($transferState.LaunchedHosts)
+            $hostEntry=$selected[0]
+            Reset-WorkspaceTransferActivity -Hosts @($selected) -Direction ([string]$directionCombo.SelectedValue) -StatusFile ([string]$d.Tag)
             if ($selected.Count -gt 1) {
                 Set-Status ("Menyiapkan SCP {0} untuk {1} node..." -f [string]$directionCombo.SelectedValue, $selected.Count) '#38BDF8'
             }
@@ -1551,10 +1882,17 @@ function Show-ScpDialog {
     }
 }
 
+function Test-ManagerStillOpen {
+    # A pumped wait lets the user close the window; do not launch anything after that.
+    return -not ($script:MainWindow -is [Windows.Window] -and -not $script:MainWindow.IsVisible)
+}
+
 function Connect-SelectedHosts {
+    param([object[]]$HostEntries=@())
     $connectionProgress = $null
     try {
-        $selected = @(Get-SelectedHostEntries)
+        $selected = if ($HostEntries.Count -gt 0) { @($HostEntries) } else { @(Get-SelectedHostEntries) }
+        $selected = @($selected)
         $layout = [string]$script:LayoutCombo.SelectedValue
         if ($selected.Count -eq 0) {
             $visibleRows = @($script:HostGrid.ItemsSource)
@@ -1566,6 +1904,13 @@ function Connect-SelectedHosts {
                 throw 'Pilih minimal satu host. Centang kolom Pilih untuk membuka beberapa host pada layout yang sama.'
             }
         }
+        $withoutSsh = @($selected | Where-Object { -not (Test-SSHManagerSshEnabled $_) })
+        if ($withoutSsh.Count -gt 0) {
+            $selected = @($selected | Where-Object { Test-SSHManagerSshEnabled $_ })
+            if ($selected.Count -eq 0) { throw 'Host yang dipilih tidak memiliki SSH. Gunakan Buka RDP untuk host RDP.' }
+            Write-SSHManagerLog -Component 'SSH' -Action 'Connect' -Message ('{0} host tanpa SSH dilewati: {1}' -f $withoutSsh.Count, (($withoutSsh | ForEach-Object { $_.Name }) -join ', '))
+        }
+        Set-Status ('Menghubungkan SSH ke {0}...' -f (($selected | ForEach-Object { $_.Name }) -join ', ')) '#38BDF8'
 
         $connectionProgress = New-ConnectionProgressWindow -Stage 'Menyiapkan koneksi SSH...' -Detail ('{0} host dengan layout {1}' -f $selected.Count, $layout)
         Update-ConnectionProgressWindow -Window $connectionProgress -Stage 'Memeriksa dependensi...' -Detail 'OpenSSH, Windows Terminal, dan password helper'
@@ -1588,41 +1933,21 @@ function Connect-SelectedHosts {
         foreach ($vpnId in $vpnIds) {
             $profile = Get-VpnById $vpnId
             if ($null -eq $profile) { throw "Profil VPN dengan ID '$vpnId' tidak ditemukan." }
-            Set-Status "Menghubungkan VPN '$($profile.Name)'..." '#38BDF8'
-            $vpnStage = "Menghubungkan VPN '$($profile.Name)'..."
-            $vpnDetail = 'Menunggu koneksi VPN terdeteksi aktif'
-            Update-ConnectionProgressWindow -Window $connectionProgress -Stage $vpnStage -Detail $vpnDetail
-            $vpnProgressAction = {
-                param($elapsedMilliseconds, $timeoutSeconds)
-                Update-ConnectionProgressWindow -Window $connectionProgress -Stage $vpnStage -Detail $vpnDetail -ElapsedMilliseconds $elapsedMilliseconds -TimeoutSeconds $timeoutSeconds
-            }.GetNewClosure()
-            $result = Connect-SSHManagerVpn -Profile $profile -Paths $script:Paths -TimeoutSeconds ([int]$script:Config.App.VpnConnectTimeoutSeconds) -ProgressAction $vpnProgressAction
-            if (-not $result.Success) { throw "VPN '$($profile.Name)' gagal: $($result.Message)" }
+            Update-ConnectionProgressWindow -Window $connectionProgress -Stage "Menghubungkan VPN '$($profile.Name)'..." -Detail 'Menunggu koneksi VPN terdeteksi aktif'
+            $result = Invoke-SSHManagerVpnConnectAsync -Profile $profile -ProgressWindow $connectionProgress
+            if (-not $result.Success) { throw "VPN '$($profile.Name)' gagal terhubung; SSH dibatalkan. $($result.Message)" }
+            if (-not (Test-ManagerStillOpen)) { return }
         }
 
         if ([bool]$script:Config.App.TestConnectionBeforeOpen) {
             $hostsToTest = @($selected)
             :connectionRetry do {
-                $failed = @()
-                $hostIndex = 0
-                foreach ($hostEntry in $hostsToTest) {
-                    $hostIndex++
-                    $progressStage = 'Menghubungkan {0} ({1}/{2})' -f $hostEntry.Name, $hostIndex, $hostsToTest.Count
-                    $progressDetail = '{0}@{1}:{2}' -f $hostEntry.Username, $hostEntry.HostName, $hostEntry.Port
-                    Update-ConnectionProgressWindow -Window $connectionProgress -Stage $progressStage -Detail $progressDetail
-                    $progressAction = {
-                        param($elapsedMilliseconds, $timeoutSeconds)
-                        Update-ConnectionProgressWindow -Window $connectionProgress -Stage $progressStage -Detail $progressDetail -ElapsedMilliseconds $elapsedMilliseconds -TimeoutSeconds $timeoutSeconds
-                    }.GetNewClosure()
-                    $result = Test-SSHManagerHost -HostEntry $hostEntry -TimeoutSeconds ([int]$script:Config.App.ConnectTimeoutSeconds) -ProgressAction $progressAction
-                    if (-not $result.Success) {
-                        $failed += [pscustomobject]@{
-                            Host = $hostEntry
-                            Message = [string]$result.Message
-                            Milliseconds = [long]$result.Milliseconds
-                        }
-                    }
-                }
+                $progressStage = if ($hostsToTest.Count -eq 1) { 'Menghubungkan {0}' -f $hostsToTest[0].Name } else { 'Menguji port SSH {0} host' -f $hostsToTest.Count }
+                $checks = @(Invoke-SSHManagerPortChecks -HostEntries $hostsToTest -Protocol Ssh -ProgressWindow $connectionProgress -Stage $progressStage)
+                if (-not (Test-ManagerStillOpen)) { return }
+                $failed = @($checks | Where-Object { -not $_.Success } | ForEach-Object {
+                    [pscustomobject]@{ Host = $_.Host; Message = [string]$_.Message; Milliseconds = [long]$_.Milliseconds }
+                })
 
                 if ($failed.Count -eq 0) { break connectionRetry }
 
@@ -1665,11 +1990,34 @@ function Connect-SelectedHosts {
     catch {
         Close-ConnectionProgressWindow -Window $connectionProgress
         $connectionProgress = $null
-        Show-ErrorMessage $_.Exception.Message 'Gagal membuka SSH'
-        Set-Status $_.Exception.Message '#EF4444'
+        Write-SSHManagerLog -Level ERROR -Component 'SSH' -Action 'Connect' -Message 'Gagal membuka SSH' -ErrorRecord $_
+        Show-ErrorMessage ("Tidak dapat membuka koneksi SSH.`n`nDetail:`n{0}" -f $_.Exception.Message) 'Gagal membuka SSH'
+        Set-Status ('SSH gagal — {0}' -f $_.Exception.Message) '#EF4444'
     }
     finally {
         Close-ConnectionProgressWindow -Window $connectionProgress
+    }
+}
+
+function Invoke-PageSelectionAction {
+    param([ValidateSet('Edit','Duplicate','Delete','Connect')][string]$Action)
+    # On RDP Manager the RDP table selection is the target; elsewhere the Connections selection is.
+    if ($script:WorkspaceState.Page -eq 'Rdp') {
+        $selected = @(Get-RdpSelectedHosts)
+        if ($selected.Count -eq 0) { Show-Warning 'Pilih host pada tabel RDP Manager terlebih dahulu.'; return }
+        switch ($Action) {
+            'Edit' { Edit-Host -HostEntry $selected[0] }
+            'Duplicate' { Duplicate-Host -HostEntry $selected[0] }
+            'Delete' { Delete-Hosts -HostEntries $selected }
+            'Connect' { Start-RdpLaunchBatch -Hosts $selected -VpnOverride (Get-RdpVpnOverride) }
+        }
+        return
+    }
+    switch ($Action) {
+        'Edit' { Edit-Host }
+        'Duplicate' { Duplicate-Host }
+        'Delete' { Delete-Hosts }
+        'Connect' { Connect-SelectedHosts }
     }
 }
 
@@ -1698,7 +2046,21 @@ function Import-ConfigurationUi {
 try {
     $mainXaml = Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'UI\MainWindow.xaml') -Raw -Encoding UTF8
     $script:MainWindow = Read-XamlWindow $mainXaml
-    foreach ($name in @('SearchBox','GroupFilter','VpnOverride','LayoutCombo','HostGrid','StatusText','CountText','DetailName','DetailEndpoint','DetailGroup','DetailAuth','DetailVpn','DetailTags','DetailNotes')) { Set-Variable -Scope Script -Name $name -Value (Get-NamedControl $script:MainWindow $name) }
+    foreach ($name in @('SearchBox','GroupFilter','VpnOverride','LayoutCombo','HostGrid','StatusText','CountText','DetailName','DetailEndpoint','DetailProtocols','DetailGroup','DetailAuth','DetailVpn','DetailTags','DetailNotes')) { Set-Variable -Scope Script -Name $name -Value (Get-NamedControl $script:MainWindow $name) }
+
+    Initialize-WorkspaceUi
+    # Last line of defence: an unexpected handler error is logged and reported instead of closing the app.
+    $script:MainWindow.Dispatcher.Add_UnhandledException({
+        param($sender, $dispatcherArgs)
+        $dispatcherArgs.Handled = $true
+        try {
+            $baseException = $dispatcherArgs.Exception.GetBaseException()
+            Show-AppError -Summary 'Terjadi kesalahan yang tidak terduga. Aplikasi tetap berjalan.' -Detail $baseException.Message -Component 'UI' -Action 'UnhandledException' -ErrorRecord $dispatcherArgs.Exception
+            Set-Status 'Terjadi kesalahan; detail tersimpan di log.' '#EF4444'
+        }
+        catch { }
+    })
+    Write-SSHManagerLog -Component 'App' -Action 'Startup' -Message ('Proper SSH Manager {0} dimulai; {1} host.' -f $script:AppVersion, @($script:Config.Hosts).Count)
 
     $script:ScpStatusTimer = New-Object Windows.Threading.DispatcherTimer
     $script:ScpStatusTimer.Interval = [TimeSpan]::FromMilliseconds(500)
@@ -1710,13 +2072,13 @@ try {
 
     $events = @{
         BtnAddHost = { Add-Host }; MenuAddHost = { Add-Host }
-        BtnEditHost = { Edit-Host }; MenuEditHost = { Edit-Host }
-        BtnDuplicateHost = { Duplicate-Host }; MenuDuplicateHost = { Duplicate-Host }
-        BtnDeleteHost = { Delete-Hosts }; MenuDeleteHost = { Delete-Hosts }
-        BtnScp = { Show-ScpDialog }; MenuScp = { Show-ScpDialog }
-        BtnEditFile = { Show-RemoteTextEditor }; MenuEditFile = { Show-RemoteTextEditor }
+        MenuEditHost = { Invoke-PageSelectionAction 'Edit' }; MenuDuplicateHost = { Invoke-PageSelectionAction 'Duplicate' }; MenuDeleteHost = { Invoke-PageSelectionAction 'Delete' }
+        BtnRdp = { Start-RdpLaunchBatch -Hosts @(Get-SelectedHostEntries) -VpnOverride ([string]$script:VpnOverride.SelectedValue) }
+        MenuRdpManager = { Invoke-WorkspaceNavigation 'Rdp' }
+        BtnScp = { Invoke-WorkspaceNavigation 'Scp' }; MenuScp = { Invoke-WorkspaceNavigation 'Scp' }
+        BtnEditFile = { Invoke-WorkspaceNavigation 'Editor' }; MenuEditFile = { Invoke-WorkspaceNavigation 'Editor' }
         BtnConnect = { Connect-SelectedHosts }; BtnTest = { Test-SelectedHosts }
-        MenuVpnProfiles = { Show-VpnManager }; MenuSettings = { Show-SettingsDialog }
+        MenuVpnProfiles = { Invoke-WorkspaceNavigation 'Vpn' }; MenuSettings = { Invoke-WorkspaceNavigation 'Settings' }
         MenuDependencies = { Show-DependencyDialog }; MenuImport = { Import-ConfigurationUi }
         MenuExport = { Export-ConfigurationUi }
     }
@@ -1724,10 +2086,10 @@ try {
     (Get-NamedControl $script:MainWindow 'MenuExit').Add_Click({$script:MainWindow.Close()})
     (Get-NamedControl $script:MainWindow 'MenuOpenData').Add_Click({Start-Process explorer.exe -ArgumentList $script:Paths.DataRoot})
     (Get-NamedControl $script:MainWindow 'MenuAbout').Add_Click({
-        Show-Info "Proper SSH Manager 1.8.0`n`nPowerShell WPF SSH/SCP workspace manager untuk Windows 10/11.`nPassword dilindungi DPAPI CurrentUser." 'Tentang'
+        Show-Info "Proper SSH Manager $($script:AppVersion)`n`nPowerShell WPF SSH/SCP/RDP workspace manager untuk Windows 10/11.`nPassword SSH dilindungi DPAPI CurrentUser; credential RDP di Windows Credential Manager." 'Tentang'
     })
     (Get-NamedControl $script:MainWindow 'MenuShortcuts').Add_Click({
-        Show-Info "Ctrl+Alt+S       Buka manager dari Windows`nCtrl+Shift+F12  Buka manager dari Windows Terminal`n`nCtrl+F           Fokus pencarian`nCtrl+N           Tambah host`nCtrl+E           Edit host`nCtrl+D           Duplikat host`nCtrl+Shift+S     Transfer SCP`nCtrl+Shift+E     Edit file remote`nDelete           Hapus host`nCtrl+Enter       Buka SSH`nF5               Refresh`nAlt+1..6         Pilih layout`nCheckbox Pilih   Pilih host untuk setiap panel`nCtrl+klik         Tambah pilihan row`nShift+klik        Pilih rentang row`nCtrl+A            Pilih semua row (saat tabel fokus)" 'Shortcut keyboard'
+        Show-Info "Ctrl+Alt+S       Buka manager dari Windows`nCtrl+Shift+F12  Buka manager dari Windows Terminal`n`nCtrl+F           Fokus pencarian`nCtrl+N           Tambah host`nCtrl+E           Edit host`nCtrl+D           Duplikat host`nCtrl+Shift+S     Transfer SCP`nCtrl+Shift+E     Edit file remote`nCtrl+Shift+R     RDP Manager`nDelete           Hapus host`nCtrl+Enter       Buka SSH`nF5               Refresh`nAlt+1..6         Pilih layout`nCheckbox Pilih   Pilih host untuk setiap panel`nCtrl+klik         Tambah pilihan row`nShift+klik        Pilih rentang row`nCtrl+A            Pilih semua row (saat tabel fokus)" 'Shortcut keyboard'
     })
     (Get-NamedControl $script:MainWindow 'MenuDisconnectVpn').Add_Click({
         $id = [string]$script:VpnOverride.SelectedValue
@@ -1737,7 +2099,7 @@ try {
         }
         $profile = Get-VpnById $id
         if ($profile) {
-            $result = Disconnect-SSHManagerVpn -Profile $profile
+            $result = Invoke-SSHManagerVpnDisconnectAsync -Profile $profile
             if ($result.Success) { Show-Info $result.Message 'VPN' }
             else { Show-ErrorMessage $result.Message 'VPN' }
         }
@@ -1745,11 +2107,12 @@ try {
 
     $script:SearchBox.Add_TextChanged({if(-not$script:IsRefreshing){Refresh-HostGrid}})
     $script:GroupFilter.Add_SelectionChanged({if(-not$script:IsRefreshing){Refresh-HostGrid}})
-    $script:HostGrid.Add_SelectionChanged({Update-HostDetails})
+    $script:HostGrid.Add_SelectionChanged({Update-HostDetails; Update-WorkspaceSelection})
     $hostSelectionClickHandler = [System.Windows.RoutedEventHandler]{
         param($sender, $eventArgs)
-        $checkBox = $eventArgs.Source
-        if ($checkBox -isnot [System.Windows.Controls.CheckBox] -or [string]$checkBox.Tag -ne 'HostSelection') { return }
+        # Source is the DataGrid for templated cells; resolve the clicked CheckBox from OriginalSource.
+        $checkBox = Get-WorkspaceEventElement -RoutedArgs $eventArgs -Type ([System.Windows.Controls.CheckBox]) -Tag 'HostSelection'
+        if ($null -eq $checkBox) { return }
 
         $row = $checkBox.DataContext
         if ($null -eq $row -or [string]::IsNullOrWhiteSpace([string]$row.Id)) { return }
@@ -1763,6 +2126,7 @@ try {
 
         $checkedRows = @($script:HostGrid.ItemsSource | Where-Object { [bool]$_.IsChecked })
         Update-HostDetails
+        Update-WorkspaceSelection
         if ($checkedRows.Count -gt 0) {
             Set-Status ('{0} host dipilih: {1}' -f $checkedRows.Count, (($checkedRows | ForEach-Object { $_.Name }) -join ', ')) '#38BDF8'
         }
@@ -1772,6 +2136,13 @@ try {
     }
     $script:HostGrid.AddHandler([System.Windows.Controls.Primitives.ButtonBase]::ClickEvent, $hostSelectionClickHandler)
     $script:HostGrid.Add_MouseDoubleClick({
+        param($sender,$eventArgs)
+        $source=$eventArgs.OriginalSource
+        while ($null -ne $source -and $source -ne $script:HostGrid) {
+            if ($source -is [Windows.Controls.Primitives.ButtonBase]) { return }
+            if ($source -isnot [Windows.Media.Visual]) { return }
+            $source=[Windows.Media.VisualTreeHelper]::GetParent($source)
+        }
         $doubleClickSelection = @(Get-SelectedHostEntries)
         if ($doubleClickSelection.Count -eq 1) {
             Connect-SelectedHosts
@@ -1781,29 +2152,33 @@ try {
         if (-not $script:IsRefreshing -and $script:LayoutCombo.SelectedValue) {
             $script:Config.App.DefaultLayout = [string]$script:LayoutCombo.SelectedValue
             Save-CurrentConfig
+            Update-WorkspaceLayoutPreview
         }
     })
 
     $script:MainWindow.Add_PreviewKeyDown({
         param($sender, $eventArgs)
+        if ($null -ne $script:WorkspaceState.ActiveFeature) { return }
         $ctrl = [Windows.Input.Keyboard]::Modifiers.HasFlag([Windows.Input.ModifierKeys]::Control)
         $alt = [Windows.Input.Keyboard]::Modifiers.HasFlag([Windows.Input.ModifierKeys]::Alt)
         $shift = [Windows.Input.Keyboard]::Modifiers.HasFlag([Windows.Input.ModifierKeys]::Shift)
 
         if ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::F) {
+            Set-WorkspacePage 'Connections'
             $script:SearchBox.Focus() | Out-Null
             $script:SearchBox.SelectAll()
             $eventArgs.Handled = $true
         }
         elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::N) { Add-Host; $eventArgs.Handled = $true }
-        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Show-RemoteTextEditor; $eventArgs.Handled = $true }
-        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Edit-Host; $eventArgs.Handled = $true }
-        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::D) { Duplicate-Host; $eventArgs.Handled = $true }
-        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::S) { Show-ScpDialog; $eventArgs.Handled = $true }
-        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::Enter) { Connect-SelectedHosts; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Invoke-WorkspaceNavigation 'Editor'; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::R) { Invoke-WorkspaceNavigation 'Rdp'; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::E) { Invoke-PageSelectionAction 'Edit'; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::D) { Invoke-PageSelectionAction 'Duplicate'; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $shift -and $eventArgs.Key -eq [Windows.Input.Key]::S) { Invoke-WorkspaceNavigation 'Scp'; $eventArgs.Handled = $true }
+        elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::Enter) { Invoke-PageSelectionAction 'Connect'; $eventArgs.Handled = $true }
         elseif ($eventArgs.Key -eq [Windows.Input.Key]::F5) { Refresh-AllViews; Set-Status 'Daftar diperbarui.'; $eventArgs.Handled = $true }
         elseif ($eventArgs.Key -eq [Windows.Input.Key]::Delete -and -not ([Windows.Input.Keyboard]::FocusedElement -is [Windows.Controls.Primitives.TextBoxBase])) {
-            Delete-Hosts
+            Invoke-PageSelectionAction 'Delete'
             $eventArgs.Handled = $true
         }
         elseif ($alt -and $eventArgs.Key -ge [Windows.Input.Key]::D1 -and $eventArgs.Key -le [Windows.Input.Key]::D6) {
@@ -1817,7 +2192,8 @@ try {
     $script:MainWindow.ShowDialog() | Out-Null
 }
 catch {
-    [Windows.MessageBox]::Show("Aplikasi berhenti karena error:`n`n$($_.Exception.Message)",'Proper SSH Manager',[Windows.MessageBoxButton]::OK,[Windows.MessageBoxImage]::Error)|Out-Null
+    Write-SSHManagerLog -Level ERROR -Component 'App' -Action 'Fatal' -Message 'Aplikasi berhenti karena error.' -ErrorRecord $_
+    [Windows.MessageBox]::Show("Aplikasi berhenti karena error:`n`n$($_.Exception.GetBaseException().Message)`n`nLog teknis: $(Get-SSHManagerLogFile)",'Proper SSH Manager',[Windows.MessageBoxButton]::OK,[Windows.MessageBoxImage]::Error)|Out-Null
     throw
 }
 finally {

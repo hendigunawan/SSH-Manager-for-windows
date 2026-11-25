@@ -1,13 +1,13 @@
 ﻿function Show-RemoteTextEditor {
-    $editorHosts = @(Get-SelectedHostEntries)
-    if ($editorHosts.Count -eq 0) { $editorHosts = @($script:Config.Hosts) }
-    if ($editorHosts.Count -eq 0) { Show-Warning 'Tambahkan host terlebih dahulu untuk mengedit file remote.'; return }
+    # The editor talks to the server over SSH, so RDP-only hosts are not offered.
+    $editorHosts = @($script:Config.Hosts | Where-Object { Test-SSHManagerSshEnabled $_ } | Sort-Object Name)
+    $preferredHosts = @(Get-WorkspacePreferredHosts)
+    if ($editorHosts.Count -eq 0) { Show-Warning 'Tambahkan host SSH terlebih dahulu untuk mengedit file remote.'; return }
 
-    $editorWindow = Read-XamlWindow (Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'UI\RemoteEditor.xaml') -Raw -Encoding UTF8)
-    $editorWindow.Owner = $script:MainWindow
+    $editorView = Read-WorkspaceView (Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'UI\RemoteEditor.xaml') -Raw -Encoding UTF8)
     $editorControls = @{}
     foreach ($controlName in @('NodeCombo','EndpointText','RemotePathBox','OpenButton','BrowseButton','CurrentFileText','SaveButton','ReloadButton','SaveLocalButton','UndoButton','RedoButton','WrapBox','FindBox','FindNextButton','EditorBox','EncodingText','LineEndingCombo','BackupBox','CaretText','MixedEndingText','EditorStatus')) {
-        $editorControls[$controlName] = Get-NamedControl $editorWindow $controlName
+        $editorControls[$controlName] = Get-NamedControl $editorView $controlName
     }
     $editorState = [pscustomobject]@{
         HostEntry=$editorHosts[0]; RemoteFile=$null; Document=$null
@@ -15,6 +15,10 @@
     }
     $editorControls.NodeCombo.ItemsSource = $editorHosts
     $editorControls.NodeCombo.SelectedIndex = 0
+    if ($preferredHosts.Count -gt 0) {
+        $preferred = @($editorHosts | Where-Object { $_.Id -eq $preferredHosts[0].Id })
+        if ($preferred.Count -gt 0) { $editorState.HostEntry=$preferred[0]; $editorControls.NodeCombo.SelectedItem=$preferred[0] }
+    }
     $editorControls.LineEndingCombo.ItemsSource = @('LF','CRLF','CR')
     $editorControls.LineEndingCombo.SelectedIndex = 0
 
@@ -37,14 +41,12 @@
         $editorControls.RedoButton.IsEnabled = $hasDocument -and $editorControls.EditorBox.CanRedo -and -not $editorState.Busy
         $editorControls.EndpointText.Text = '{0}@{1}:{2}' -f $editorState.HostEntry.Username,$editorState.HostEntry.HostName,$editorState.HostEntry.Port
         $editorControls.EndpointText.ToolTip = $editorControls.EndpointText.Text
-        $title = 'Edit file remote — Proper SSH Manager'
         if ($hasDocument) {
             $fileLabel = '{0} • {1}' -f $editorState.HostEntry.Name,$editorState.RemoteFile.path
-            $editorControls.CurrentFileText.Text = $fileLabel
+            $editorControls.CurrentFileText.Text = $(if ($editorState.Dirty) { '* ' } else { '' }) + $fileLabel
             $editorControls.CurrentFileText.ToolTip = $fileLabel
-            $title = '{0}{1} — Edit file remote' -f $(if ($editorState.Dirty) { '* ' } else { '' }),$fileLabel
         }
-        $editorWindow.Title = $title
+
     }
     $updateEditorDirty = {
         if ($editorState.Loading -or $null -eq $editorState.Document) { return }
@@ -100,7 +102,7 @@
     $confirmEditorChanges = {
         if (-not $editorState.Dirty) { return $true }
         $unsavedWindow = Read-XamlWindow (Get-Content -LiteralPath (Join-Path $script:ApplicationRoot 'UI\UnsavedChanges.xaml') -Raw -Encoding UTF8)
-        $unsavedWindow.Owner = $editorWindow
+        $unsavedWindow.Owner = $script:MainWindow
         $unsavedWindow.Tag = 'Cancel'
         (Get-NamedControl $unsavedWindow 'UnsavedFileText').Text = '{0} • {1}' -f $editorState.HostEntry.Name,$editorState.RemoteFile.path
         (Get-NamedControl $unsavedWindow 'ConfirmSaveButton').Add_Click({ $unsavedWindow.Tag='Save'; $unsavedWindow.DialogResult=$true })
@@ -172,7 +174,7 @@
                 $slash = $editorState.RemoteFile.path.LastIndexOf('/')
                 if ($slash -gt 0) { $initialPath=$editorState.RemoteFile.path.Substring(0,$slash) } else { $initialPath='/' }
             }
-            $selection = Show-RemotePathPicker -Owner $editorWindow -HostEntry $editorState.HostEntry -InitialPath $initialPath -FilesOnly
+            $selection = Show-RemotePathPicker -Owner $script:MainWindow -HostEntry $editorState.HostEntry -InitialPath $initialPath -FilesOnly
             if ($null -eq $selection) { & $setEditorStatus 'Pemilihan file dibatalkan. Isi editor tetap tersedia.' }
         }
         catch { & $setEditorStatus ('Gagal memilih file: ' + $_.Exception.Message) '#F87171' }
@@ -188,7 +190,7 @@
             $localPicker.Filter = 'Semua file (*.*)|*.*'
             $suggested = [string]$editorState.RemoteFile.path
             $localPicker.FileName = ($suggested.Substring($suggested.LastIndexOf('/')+1) -replace '[<>:"/\\|?*\x00-\x1F]','_')
-            if ($localPicker.ShowDialog($editorWindow)) {
+            if ($localPicker.ShowDialog($script:MainWindow)) {
                 $localBytes = ConvertTo-SSHManagerTextBytes -Document $editorState.Document -Text $editorControls.EditorBox.Text -LineEnding ([string]$editorControls.LineEndingCombo.SelectedItem)
                 [IO.File]::WriteAllBytes($localPicker.FileName,$localBytes)
                 & $setEditorStatus ('Salinan lokal tersimpan: {0}. File remote belum diubah oleh tindakan ini.' -f $localPicker.FileName) '#22C55E'
@@ -239,18 +241,18 @@
     })
     $editorControls.FindNextButton.Add_Click({ & $findNext })
     $editorControls.FindBox.Add_KeyDown({ param($sender,$eventArgs); if ($eventArgs.Key -eq [Windows.Input.Key]::Enter) { & $findNext; $eventArgs.Handled=$true } })
-    $editorWindow.Add_PreviewKeyDown({
+    $editorView.Add_PreviewKeyDown({
         param($sender,$eventArgs)
         $ctrl = [Windows.Input.Keyboard]::Modifiers.HasFlag([Windows.Input.ModifierKeys]::Control)
         if ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::S) { if (-not $editorState.Busy) { [void](& $saveRemoteFile) }; $eventArgs.Handled=$true }
         elseif ($ctrl -and $eventArgs.Key -eq [Windows.Input.Key]::F) { if (-not $editorState.Busy) { [void]$editorControls.FindBox.Focus(); $editorControls.FindBox.SelectAll() }; $eventArgs.Handled=$true }
         elseif ($eventArgs.Key -eq [Windows.Input.Key]::F3) { & $findNext; $eventArgs.Handled=$true }
     })
-    $editorWindow.Add_Closing({
-        param($sender,$eventArgs)
-        if ($editorState.Busy) { $eventArgs.Cancel=$true; return }
-        if (-not (& $confirmEditorChanges)) { $eventArgs.Cancel=$true }
-    })
+    $canLeaveEditor = {
+        if ($editorState.Busy) { return $false }
+        return (& $confirmEditorChanges)
+    }
     & $refreshEditorUi
-    [void]$editorWindow.ShowDialog()
+    if (Get-Command Initialize-EditorLineGutter -ErrorAction SilentlyContinue) { Initialize-EditorLineGutter -Window $editorView }
+    [void](Show-WorkspaceFeature -View $editorView -Page 'Editor' -CanLeave $canLeaveEditor)
 }

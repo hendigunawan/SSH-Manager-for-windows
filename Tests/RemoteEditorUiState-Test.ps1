@@ -2,9 +2,10 @@
 param()
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version 2
-# Run the actual modal controller with control/transport doubles. This is not a WPF render test.
+# Run the actual page controller with control/transport doubles. This is not a WPF render test.
 $script:ApplicationRoot=Split-Path -Parent $PSScriptRoot
 Import-Module (Join-Path $script:ApplicationRoot 'Modules/SSHManager.Core.psm1') -Force -DisableNameChecking
+. (Join-Path $script:ApplicationRoot 'UI/Workspace.ps1')
 . (Join-Path $script:ApplicationRoot 'UI/RemoteEditor.ps1')
 if (-not ('Windows.Visibility' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -49,10 +50,18 @@ function Read-XamlWindow {
             Assert-Editor ($script:PromptChoices.Count -gt 0) 'Unexpected unsaved prompt.'
             $this.Tag=$script:PromptChoices.Dequeue()
         }
-        else { & $script:EditorScenario $this }
+        else { throw 'Feature opened as a modal window.' }
         return $true
     }
     return $window
+}
+function Read-WorkspaceView { param($Xaml); Read-XamlWindow $Xaml }
+function Show-WorkspaceFeature {
+    param($View,$Page,$CanLeave)
+    Assert-Editor ($Page -eq 'Editor') 'Wrong page route.'
+    $script:EditorCanLeave=$CanLeave
+    & $script:EditorScenario $View
+    return $false
 }
 function Get-NamedControl { param($Window,$Name); return $Window.Controls[$Name] }
 function Get-SelectedHostEntries { return $script:Config.Hosts }
@@ -89,11 +98,11 @@ $script:EditorScenario = {
     Assert-Editor ($c.EditorBox.Text -ceq "first`r`n") ('Opened text not displayed: '+$c.EditorStatus.Text)
     $c.EditorBox.Text="modified`r`n"
     & $c.EditorBox.Handlers.TextChanged
-    Assert-Editor ($c.SaveButton.IsEnabled -and $window.Title.StartsWith('* ')) 'Dirty state missing.'
+    Assert-Editor ($c.SaveButton.IsEnabled -and $c.CurrentFileText.Text.StartsWith('* ')) 'Dirty state missing.'
     $c.RemotePathBox.Text='/remote/must-not-be-saved.cfg'
     & $c.SaveButton.Handlers.Click
     Assert-Editor ($script:SaveCalls[0].Path -ceq '/remote/a.cfg' -and $script:SaveCalls[0].Node -ceq 'a') 'Typing a path redirected save.'
-    Assert-Editor (-not $c.SaveButton.IsEnabled -and -not $window.Title.StartsWith('* ')) 'Successful save did not mark document clean.'
+    Assert-Editor (-not $c.SaveButton.IsEnabled -and -not $c.CurrentFileText.Text.StartsWith('* ')) 'Successful save did not mark document clean.'
     Assert-Editor ($script:LastEditorMainStatus -match 'Selesai edit file') 'Main status did not report save.'
 
     $c.EditorBox.Text="unsaved`r`n"; & $c.EditorBox.Handlers.TextChanged
@@ -107,8 +116,8 @@ $script:EditorScenario = {
     Assert-Editor ($script:SaveCalls[1].Node -eq 'a' -and $script:SaveCalls[1].Version -eq ('b'*64)) 'Unsaved prompt saved wrong node/version.'
 
     $script:PromptChoices.Enqueue('Save')
-    $closing=[pscustomobject]@{Cancel=$false}; & $window.Handlers.Closing $window $closing
-    Assert-Editor ($closing.Cancel -and $c.EditorBox.Text -ceq "unsaved`r`n") 'Failed save allowed closing editor.'
+    $canLeave=[bool](& $script:EditorCanLeave)
+    Assert-Editor (-not $canLeave -and $c.EditorBox.Text -ceq "unsaved`r`n") 'Failed save allowed closing editor.'
     $script:FailSave=$false
     $script:PromptChoices.Enqueue('Save')
     $c.NodeCombo.SelectedItem=$script:Config.Hosts[1]; & $c.NodeCombo.Handlers.SelectionChanged
@@ -122,8 +131,8 @@ $script:EditorScenario = {
     Assert-Editor ($c.EditorBox.Text -ceq "keep this`r`n" -and $c.SaveButton.IsEnabled) 'Read failure discarded current document.'
     & $c.SaveButton.Handlers.Click
     Assert-Editor ($script:SaveCalls[4].Path -eq '/remote/b.cfg' -and $script:SaveCalls[4].Node -eq 'b') 'Read failure changed loaded save target.'
-    $closing=[pscustomobject]@{Cancel=$false}; & $window.Handlers.Closing $window $closing
-    Assert-Editor (-not $closing.Cancel) 'Clean editor cannot close.'
+    $canLeave=[bool](& $script:EditorCanLeave)
+    Assert-Editor $canLeave 'Clean editor cannot close.'
     Assert-Editor ($script:PromptChoices.Count -eq 0) 'Prompt scenario was not consumed.'
 }
 Show-RemoteTextEditor

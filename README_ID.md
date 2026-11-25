@@ -4,6 +4,17 @@
 
 Proper SSH Manager adalah aplikasi desktop WPF berbasis PowerShell untuk mengelola koneksi SSH dan transfer SCP di Windows. Aplikasi menyatukan daftar host, pilihan VPN, password otomatis, tes koneksi, pencarian cepat, serta workspace Windows Terminal dengan beberapa layout pane.
 
+## Tampilan workspace (v1.9.1)
+
+Sidebar membuka semua halaman di dalam jendela utama yang sama. SCP, Remote Editor, VPN & Network, dan Settings tidak lagi membuka jendela fitur tambahan. Dialog pemilih file, tambah/edit profil, dan konfirmasi tetap tampil saat diperlukan. Pilihan Connections menjadi pilihan awal yang bisa diubah di halaman SCP/editor; aksi pada baris Connections hanya berlaku untuk host pada baris tersebut.
+
+- **Terminal Layout:** pilih kartu layout, lihat pemetaan host, lalu buka Windows Terminal. Pratinjau bukan sesi SSH aktif.
+- **SCP Transfer:** centang node langsung di halaman SCP, atur arah dan path, lalu tekan **Mulai transfer**. Semua host tersedia, dengan tombol Pilih semua/Kosongkan; Connections tidak wajib dipilih dahulu. File/folder lokal dapat ditarik ke area upload. Hasil batch terlihat di halaman aktivitas SCP manager; progres byte tetap di terminal. Status awal “Menunggu hasil” belum memastikan proses masih aktif.
+- **Remote Editor:** pilih server dan file; tersedia Simpan, Muat ulang, Cari, Undo/Redo, Word Wrap, dan Salinan lokal. Nomor di kiri mengikuti baris tampilan termasuk baris hasil Word Wrap. Pindah menu tetap meminta keputusan jika ada perubahan belum disimpan. Editor menggunakan teks biasa tanpa syntax highlighting.
+
+Update: tutup manager lama, ekstrak paket ke folder baru, lalu jalankan `Install.cmd`. Host dan kredensial tersimpan tetap memakai folder data yang sama. Tidak ada dependensi UI baru. Pemeriksaan visual WPF tersedia di `Tests/Workspace-Windows-Test.ps1` dan perlu dijalankan pada Windows.
+
+
 ## Fitur utama
 
 - Editor teks remote seperti Notepad: **Edit file** (`Ctrl+Shift+E`), simpan `Ctrl+S`, pencarian, Undo/Redo, Word Wrap, dan salinan lokal.
@@ -115,8 +126,8 @@ Jika opsi **Tutup hanya tab manager setelah terminal dibuka** aktif, aplikasi WP
 
 ## Transfer SCP
 
-1. Centang kolom **Pilih** pada satu atau beberapa node. Jumlah node SCP tidak dibatasi oleh layout SSH.
-2. Klik tombol **SCP**, buka **Host → Transfer SCP**, atau tekan `Ctrl+Shift+S`.
+1. Buka **SCP Transfer** melalui sidebar, tombol **SCP**, atau `Ctrl+Shift+S`.
+2. Centang satu atau beberapa node langsung pada daftar **PILIH NODE**. Jumlah node tidak dibatasi oleh layout SSH. Pilihan dari Connections hanya menjadi pilihan awal.
 3. Pilih **Upload** atau **Download**.
 4. Untuk upload banyak file, klik **Pilih file...** lalu pilih beberapa file sekaligus. Sumber lokal yang sama dikirim ke semua node pilihan.
 5. Untuk upload sebuah folder, klik **Pilih folder...**; opsi **Recursive** akan aktif otomatis.
@@ -132,7 +143,7 @@ Status bawah menampilkan progres `[1/3]` lalu ringkasan, misalnya **Selesai SCP 
 
 VPN diperiksa untuk node yang sedang diproses. Kegagalan VPN, autentikasi, pretest koneksi, atau SCP dicatat pada node tersebut. Jika memakai Jump Host, pretest TCP langsung dilewati dan koneksi dilakukan lewat SSH jump host. Opsi **Tes koneksi sebelum membuka** tetap mengikuti pengaturan aplikasi. Menutup tab batch sebelum selesai akan membuat manager menandai node yang belum selesai sebagai terhenti; file yang sudah berhasil tersalin tetap ada.
 
-Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.8.0**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
+Banner tab transfer menampilkan versi runtime, misalnya **Proper SSH Manager 1.9.1**. Setelah update, pastikan nomor tersebut tampil agar transfer tidak memakai script instalasi lama.
 
 Secara default, manager diminimalkan selama SCP berjalan. Setelah seluruh node berhasil, proses PowerShell SCP berakhir, tab SCP ditutup otomatis, dan jendela manager yang sama dipulihkan ke depan. Status bawah diperbarui menjadi hasil akhir seperti **Selesai SCP Download: 8 file dari host el.d.mme.** atau **Selesai SCP Upload: 1 folder ke host el.d.mme.** Jika ada node gagal, hasil tetap ditampilkan sampai Anda menekan Enter untuk kembali ke manager dan status bawah menampilkan pesan gagal. Perilaku kembali otomatis ini dapat diubah melalui **Konfigurasi → Pengaturan aplikasi → Kembali ke manager setelah transfer SCP berhasil**.
 
@@ -144,11 +155,11 @@ Private key harus berformat OpenSSH. File PuTTY `.ppk` perlu dikonversi terlebih
 
 ## Edit file teks remote
 
-1. Pilih node melalui checkbox **Pilih**, lalu klik **Edit file** atau tekan `Ctrl+Shift+E`.
+1. Buka **Remote Editor** di sidebar, lalu pilih server pada dropdown **Node**. Tombol **Edit file** dan `Ctrl+Shift+E` juga membuka halaman yang sama.
 2. Klik **Pilih file...** untuk menelusuri server, atau masukkan path file lalu klik **Buka**.
 3. Edit teks seperti di Notepad, kemudian tekan `Ctrl+S` untuk menyimpan langsung ke server.
 4. Gunakan **Cari** / `Ctrl+F` dan **Berikutnya** / `F3` untuk mencari teks. Copy/paste, Undo/Redo, dan Word Wrap tersedia.
-5. Jika beberapa node dipilih, gunakan dropdown **Node** untuk berpindah. Setiap simpan berlaku pada satu file yang sedang dibuka di node tersebut.
+5. Dropdown **Node** menyediakan seluruh host tersimpan; gunakan untuk berpindah. Setiap simpan berlaku pada satu file yang sedang dibuka di node tersebut.
 
 Status menghubungkan, membaca, menyimpan, dan error langsung terlihat. Tanda `*` berarti perubahan belum disimpan. Saat menutup, memuat ulang, atau berpindah file/node, pilih **Simpan**, **Buang perubahan**, atau **Batal**. Jika baca/simpan gagal, isi editor tetap tersedia. **Simpan salinan lokal...** membuat salinan tanpa menandai file remote sudah tersimpan.
 
@@ -159,6 +170,17 @@ Opsi **Buat backup sebelum simpan** aktif secara default. Backup `.proper-backup
 Sebelum simpan, versi dibandingkan dengan file di server. Jika berbeda, perubahan Anda tetap tersedia untuk disalin ke lokal atau dimuat ulang. Simpan bersamaan dari editor ini diurutkan dalam folder yang sama. Program lain perlu mengikuti advisory lock yang sama untuk koordinasi penuh; hindari mengedit file yang sama secara bersamaan dari aplikasi lain. Jika simpan timeout atau koneksi terputus, muat ulang untuk memastikan apakah server sudah menerima perubahan sebelum mencoba lagi.
 
 Server membutuhkan Linux dan `python3` dengan standard library; tidak perlu paket pip. Helper dikirim melalui SSH setiap operasi dan tidak diinstal pada server. Autentikasi, port, jump host, host-key policy, serta override VPN mengikuti node seperti browser remote. Python tidak diperlukan di Windows untuk menjalankan editor.
+
+## RDP Manager
+
+Buka **RDP Manager** dari sidebar (`Ctrl+Shift+R`). Halaman ini menampilkan semua host dengan **RDP** aktif dan tetap berada di jendela utama yang sama.
+
+- Aktifkan RDP per host melalui **Edit host → Connection Type** (SSH, RDP, atau keduanya). Atur port RDP (default 3389), username opsional, serta fullscreen, multi monitor, `/admin`, atau resolusi kustom.
+- **Buka RDP** membuka satu sesi `mstsc.exe` untuk setiap host terpilih. Lebih dari 5 sesi meminta konfirmasi. **Test RDP** hanya memeriksa TCP `host:port` dan menampilkan latency, tanpa login.
+- **VPN saat connect**: tanpa VPN, profil VPN host, atau profil paksa. VPN harus tersambung sebelum RDP dibuka; jika gagal, RDP dibatalkan.
+- Password RDP bersifat opsional. Jika diisi, password disimpan di **Windows Credential Manager** (`TERMSRV/<host>`) dan tidak pernah di `config.json`. Tanpa password tersimpan, Windows akan memintanya.
+
+Connections juga menampilkan badge SSH/RDP, tombol RDP per baris, dan **Buka RDP**. Aksi SSH, SCP, dan Remote Editor tidak ditawarkan untuk host RDP saja.
 
 ## Konfigurasi VPN
 
@@ -198,6 +220,7 @@ Jangan menulis password langsung di field perintah khusus karena command line da
 | `Ctrl+N` | Tambah host |
 | `Ctrl+E` | Edit host |
 | `Ctrl+Shift+E` | Buka editor file remote |
+| `Ctrl+Shift+R` | Buka RDP Manager |
 | `Ctrl+D` | Duplikat host |
 | `Ctrl+Shift+S` | Upload atau download melalui SCP |
 | `Delete` | Hapus host |
